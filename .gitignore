@@ -4,3 +4,7 @@ parity/java/*.jar
 
 # graft's local graph cache — regenerable, not committed (run `graft build`).
 /graft/
+
+# local Claude Code and MCP settings
+/.claude/
+/.mcp.json
