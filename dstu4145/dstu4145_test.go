@@ -348,3 +348,41 @@ func TestSignatureRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+func TestCurveFromParams(t *testing.T) {
+	m257 := func() CurveParams {
+		return CurveParams{
+			M: 257, K: []int{12}, A: 0,
+			B: mustInt(t, "1CEF494720115657E18F938D7A7942394FF9425C1458C57861F9EEA6ADBE3BE10"),
+			N: mustInt(t, "800000000000000000000000000000006759213AF182E987D3E17714907D470D"),
+			// compressed G: x with the lowest bit replaced by Tr(y/x) = 0
+			G: mustHex(t, "002a29ef207d0e9b6c55cd260b306c7e007ac491ca1b10c62334a9e8dcd8d20fb6"),
+		}
+	}
+	got, err := CurveFromParams(m257())
+	if err != nil {
+		t.Fatalf("CurveFromParams(M257) error = %v", err)
+	}
+	if want := mustCurve(t, 6); got != want {
+		t.Errorf("CurveFromParams(M257) = %p, want NamedCurve(6) %p", got, want)
+	}
+
+	tests := map[string]func(*CurveParams){
+		"other degree":     func(p *CurveParams) { p.M = 263 },
+		"other polynomial": func(p *CurveParams) { p.K = []int{1, 2, 12} },
+		"other a":          func(p *CurveParams) { p.A = 1 },
+		"other b":          func(p *CurveParams) { p.B = new(big.Int).Add(p.B, big.NewInt(2)) },
+		"other n":          func(p *CurveParams) { p.N = new(big.Int).Add(p.N, big.NewInt(2)) },
+		"other G":          func(p *CurveParams) { p.G = slices.Clone(p.G); p.G[5] ^= 1 },
+		"nil b":            func(p *CurveParams) { p.B = nil },
+	}
+	for name, change := range tests {
+		t.Run(name, func(t *testing.T) {
+			p := m257()
+			change(&p)
+			if c, err := CurveFromParams(p); err == nil {
+				t.Errorf("CurveFromParams(%+v) = %p, want error", p, c)
+			}
+		})
+	}
+}

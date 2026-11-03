@@ -3,6 +3,7 @@
 //
 //	parity gen > cases.txt          deterministic random cases computed by uacrypto
 //	parity verify signatures.txt    checks signatures made by the other implementations
+//	parity czo CACertificates.p7b   checks every DSTU 4145 certificate of the CZO bundle against its issuer
 //
 // Case lines are space-separated hex ("-" for an empty value):
 //
@@ -18,7 +19,10 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/cipher"
+	"crypto/x509"
+	"encoding/asn1"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -26,6 +30,7 @@ import (
 	"math/big"
 	"math/rand/v2"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -34,6 +39,7 @@ import (
 	"github.com/h0rn3t/uacrypto/gost34311"
 	"github.com/h0rn3t/uacrypto/kalyna"
 	"github.com/h0rn3t/uacrypto/kupyna"
+	"github.com/h0rn3t/uacrypto/pki"
 )
 
 func main() {
@@ -53,8 +59,10 @@ func run(args []string, out io.Writer) error {
 		return w.Flush()
 	case len(args) == 2 && args[0] == "verify":
 		return verify(args[1], out)
+	case len(args) == 2 && args[0] == "czo":
+		return checkBundle(args[1], out)
 	}
-	return errors.New("usage: parity gen | parity verify <signatures.txt>")
+	return errors.New("usage: parity gen | parity verify <signatures.txt> | parity czo <CACertificates.p7b>")
 }
 
 func encode(b []byte) string {
@@ -226,4 +234,69 @@ func verifyLine(fields []string) (bool, error) {
 		return false, fmt.Errorf("signature %s %s is not hex", fields[5], fields[6])
 	}
 	return dstu4145.Verify(pub, hash, r, s), nil
+}
+
+// checkBundle verifies each certificate of a PKCS#7 bundle whose issuer, found
+// by key identifier, has a DSTU 4145 key. It fails on any rejected signature.
+func checkBundle(path string, out io.Writer) error {
+	data, err := os.ReadFile(path) //nolint:gosec // G703: the operator names the file on the command line
+	if err != nil {
+		return err
+	}
+	var bundle struct {
+		Type       asn1.ObjectIdentifier
+		SignedData struct {
+			Version      int
+			Digests      asn1.RawValue
+			Content      asn1.RawValue
+			Certificates asn1.RawValue `asn1:"optional,tag:0"`
+			SignerInfos  asn1.RawValue
+		} `asn1:"explicit,tag:0"`
+	}
+	if _, err := asn1.Unmarshal(data, &bundle); err != nil {
+		return fmt.Errorf("PKCS#7 bundle: %w", err)
+	}
+	var certs []*x509.Certificate
+	for rest := bundle.SignedData.Certificates.Bytes; len(rest) > 0; {
+		var raw asn1.RawValue
+		if rest, err = asn1.Unmarshal(rest, &raw); err != nil {
+			return fmt.Errorf("bundle certificate: %w", err)
+		}
+		c, err := x509.ParseCertificate(raw.FullBytes)
+		if err != nil {
+			return err
+		}
+		certs = append(certs, c)
+	}
+
+	var ok, other, orphans, rejected int
+	var report strings.Builder
+	for _, c := range certs {
+		i := slices.IndexFunc(certs, func(p *x509.Certificate) bool {
+			return len(c.AuthorityKeyId) > 0 && bytes.Equal(p.SubjectKeyId, c.AuthorityKeyId)
+		})
+		if i < 0 {
+			orphans++
+			continue
+		}
+		err := pki.CheckCertificateSignature(c, certs[i])
+		switch {
+		case err == nil:
+			ok++
+		case errors.Is(err, x509.ErrUnsupportedAlgorithm) && c.PublicKeyAlgorithm != x509.UnknownPublicKeyAlgorithm && certs[i].PublicKeyAlgorithm != x509.UnknownPublicKeyAlgorithm:
+			other++ // RSA or ECDSA on both sides: crypto/x509's business
+		default:
+			rejected++
+			fmt.Fprintf(&report, "REJECTED %s: %v\n", c.Subject, err)
+		}
+	}
+	fmt.Fprintf(&report, "CZO bundle: %d certificates, DSTU 4145 %d ok %d rejected; %d RSA/ECDSA, %d without issuer in the bundle\n",
+		len(certs), ok, rejected, other, orphans)
+	if _, err := io.WriteString(out, report.String()); err != nil {
+		return err
+	}
+	if rejected > 0 {
+		return fmt.Errorf("%d certificates rejected", rejected)
+	}
+	return nil
 }

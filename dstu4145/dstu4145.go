@@ -66,6 +66,9 @@ func randomScalar(c *Curve, random io.Reader) (*big.Int, error) {
 	return k.Add(k, big.NewInt(1)), nil
 }
 
+// Curve returns the curve of k.
+func (k *PublicKey) Curve() *Curve { return k.curve }
+
 // Public returns the public key of k.
 func (k *PrivateKey) Public() *PublicKey { return &k.pub }
 

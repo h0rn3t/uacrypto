@@ -1,6 +1,7 @@
 package dstu4145
 
 import (
+	"errors"
 	"fmt"
 	"math/big"
 	"sync"
@@ -71,6 +72,34 @@ func NamedCurve(id int) (*Curve, error) {
 		return nil, fmt.Errorf("dstu4145: unknown named curve %d", id)
 	}
 	return curves[id], nil
+}
+
+// CurveParams are the explicit parameters of a curve as certificates carry
+// them in DSTU4145ECBinary.
+type CurveParams struct {
+	M int      // degree of the field GF(2^m)
+	K []int    // middle exponents of the reduction polynomial: one for a trinomial, three for a pentanomial
+	A int      // coefficient a, 0 or 1
+	B *big.Int // coefficient b
+	N *big.Int // order of the base point
+	G []byte   // base point in the compressed encoding of PublicKey.Bytes
+}
+
+// CurveFromParams returns the named curve with parameters p. Only the ten
+// named curves are supported: any other curve is an error.
+func CurveFromParams(p CurveParams) (*Curve, error) {
+	if p.B == nil || p.N == nil {
+		return nil, errors.New("dstu4145: curve parameters lack b or n")
+	}
+	poly := newField(p.M, p.K...).poly
+	g := new(big.Int).SetBytes(p.G)
+	for _, c := range namedCurves() {
+		if c.f.poly.Cmp(poly) == 0 && c.a.Cmp(big.NewInt(int64(p.A))) == 0 && c.b.Cmp(p.B) == 0 && c.n.Cmp(p.N) == 0 &&
+			new(big.Int).SetBytes((&PublicKey{curve: c, q: c.g}).Bytes()).Cmp(g) == 0 {
+			return c, nil
+		}
+	}
+	return nil, fmt.Errorf("dstu4145: the curve over GF(2^%d) is not one of the named curves", p.M)
 }
 
 // Order returns a copy of n, the order of the curve base point.
