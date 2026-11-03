@@ -8,6 +8,7 @@ use structured_dstu4145::domain::Domain;
 use structured_dstu4145::{Basis, ByteOrder};
 use ua_cryptography_dstu4145::{decode_signature, encode_signature, get_polynomial_curve_by_index, Signer};
 use ua_cryptography_dstu7564::{HashSize, Kupyna};
+use ua_cryptography_dstu7624::{BlockSize, Kalyna};
 use ua_cryptography_gost::{Gost28147, Gost34311, DEFAULT_DKE};
 
 const DEGREES: [usize; 10] = [163, 167, 173, 179, 191, 233, 257, 307, 367, 431];
@@ -20,15 +21,6 @@ fn x(b: &[u8]) -> String {
 }
 fn rev(b: &[u8]) -> Vec<u8> {
     b.iter().rev().copied().collect()
-}
-/// v little-endian in exactly `width` bytes, or None when it does not fit.
-fn le(v: &BigUint, width: usize) -> Option<Vec<u8>> {
-    let mut b = v.to_bytes_le();
-    if b.len() > width {
-        return None;
-    }
-    b.resize(width, 0);
-    Some(b)
 }
 
 fn main() {
@@ -76,6 +68,16 @@ fn main() {
                 let back = c.decrypt_block(&ct);
                 check("ua-cryptography-gost      gost28147 decrypt", x(&back) == f[2], &line);
             }
+            "K" => {
+                let (key, pt, ct) = (h(f[1]), h(f[2]), h(f[3]));
+                let name = format!("ua-cryptography-dstu7624  kalyna{}/{}", pt.len() * 8, key.len() * 8);
+                let c = Kalyna::new(BlockSize::from_bits(pt.len() * 8).unwrap(), &key).unwrap();
+                let mut block = pt.clone();
+                c.encrypt_block(&mut block);
+                check(&name, block == ct, &line);
+                c.decrypt_block(&mut block);
+                check(&format!("{name} decrypt"), block == pt, &line);
+            }
             "S" => {
                 let id: usize = f[1].parse().unwrap();
                 let tag = format!("curve {} #{}", f[1], f[2]);
@@ -98,15 +100,11 @@ fn main() {
                 let (r2, s2) = decode_signature(&own).unwrap();
                 writeln!(out, "X ua-cryptography {} {} {} {} {}", f[1], f[4], f[5], r2.to_str_radix(16), s2.to_str_radix(16)).unwrap();
 
-                // structured-dstu4145: ключ у кодуванні сертифіката BE, підпис r||s little-endian, як у ІІТ
+                // structured-dstu4145: ключ у кодуванні сертифіката BE, підпис r||s little-endian з MarshalSignature, як у ІІТ
                 let domain = Domain::named(Basis::Polynomial, DEGREES[id]).unwrap();
-                let width = domain.order_bits().div_ceil(8);
                 match domain.public_key(&h(f[4]), ByteOrder::BigEndian) {
                     Ok(spk) => {
-                        let accepted = match (le(&r, width), le(&s, width)) {
-                            (Some(r), Some(s)) => spk.verify_prehash(&hash, &[r, s].concat(), ByteOrder::LittleEndian).unwrap_or(false),
-                            _ => false, // r або s ширші за поле підпису — підпис відхилено
-                        };
+                        let accepted = spk.verify_prehash(&hash, &h(f[8]), ByteOrder::LittleEndian).unwrap_or(false);
                         check("structured-dstu4145       verify Go signature (r||s LE)", accepted, &tag);
                     }
                     Err(e) => check("structured-dstu4145       decode Go key", false, &format!("{tag} {e:?}")),

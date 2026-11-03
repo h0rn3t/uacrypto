@@ -5,6 +5,7 @@ import java.util.*;
 import org.bouncycastle.asn1.ASN1ObjectIdentifier;
 import org.bouncycastle.asn1.ua.*;
 import org.bouncycastle.crypto.digests.*;
+import org.bouncycastle.crypto.engines.DSTU7624Engine;
 import org.bouncycastle.crypto.engines.GOST28147Engine;
 import org.bouncycastle.crypto.params.*;
 import org.bouncycastle.crypto.signers.DSTU4145Signer;
@@ -46,6 +47,16 @@ public class Check {
           GOST28147Engine e = new GOST28147Engine(); byte[] ct = new byte[8];
           e.init(true, new ParametersWithSBox(new KeyParameter(h(f[1])), sbox())); e.processBlock(h(f[2]), 0, ct, 0);
           check("gost28147", x(ct).equals(f[3]), line);
+          break;
+        }
+        case "K": {
+          byte[] key = h(f[1]), pt = h(f[2]), ct = h(f[3]), res = new byte[pt.length];
+          String name = "kalyna" + pt.length * 8 + "/" + key.length * 8;
+          DSTU7624Engine e = new DSTU7624Engine(pt.length * 8);
+          e.init(true, new KeyParameter(key)); e.processBlock(pt, 0, res, 0);
+          check(name, Arrays.equals(res, ct), line);
+          e.init(false, new KeyParameter(key)); e.processBlock(ct, 0, res, 0);
+          check(name + " decrypt", Arrays.equals(res, pt), line);
           break;
         }
         case "S": {

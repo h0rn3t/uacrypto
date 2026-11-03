@@ -1,3 +1,6 @@
 parity/out/
 parity/rust/target/
 parity/java/*.jar
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/

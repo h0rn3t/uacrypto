@@ -8,6 +8,8 @@ package kupyna
 import (
 	"encoding/binary"
 	"hash"
+
+	"github.com/h0rn3t/uacrypto/internal/spn"
 )
 
 // Digest sizes in bytes.
@@ -16,9 +18,6 @@ const (
 	Size384 = 48
 	Size512 = 64
 )
-
-// mds is the first row of the circulant MixColumns matrix.
-var mds = [8]byte{0x01, 0x01, 0x05, 0x01, 0x08, 0x06, 0x07, 0x04}
 
 // digest keeps the state as columns of 8 bytes (little-endian words in Bouncy
 // Castle): 8 columns and 10 rounds for Kupyna-256, 16 columns and 14 rounds
@@ -178,33 +177,11 @@ func mixRound(s [][8]byte) {
 			shift = 11
 		}
 		for c := range n {
-			shifted[(c+shift)%n][r] = sbox[r%4][s[c][r]]
+			shifted[(c+shift)%n][r] = spn.Sbox[r%4][s[c][r]]
 		}
 	}
 	for c := range n {
-		for r := range 8 {
-			var v byte
-			for k := range 8 {
-				v ^= gfMul(mds[(k-r+8)%8], shifted[c][k])
-			}
-			s[c][r] = v
-		}
+		spn.MixColumn(&spn.MDS, &shifted[c])
+		s[c] = shifted[c]
 	}
-}
-
-// gfMul multiplies in GF(2^8) modulo x^8+x^4+x^3+x^2+1 (0x11d).
-func gfMul(a, b byte) byte {
-	var p byte
-	for b != 0 {
-		if b&1 != 0 {
-			p ^= a
-		}
-		hi := a & 0x80
-		a <<= 1
-		if hi != 0 {
-			a ^= 0x1d
-		}
-		b >>= 1
-	}
-	return p
 }

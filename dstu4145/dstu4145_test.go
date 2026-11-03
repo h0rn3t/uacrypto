@@ -258,3 +258,93 @@ func FuzzParsePublicKey(f *testing.F) {
 		}
 	})
 }
+
+// iitSignature is the test-ca root signature of TestIITSignature: r||s on M257,
+// 32 bytes each, little-endian.
+const iitSignature = "de1250f94969f045f2c27fba909d8b550224f197ea71bff97f1820f97779c97ddc0c4b30b64a598262bed03a76c988eff2c716fc679a104ff7c785e856a9f52d"
+
+func TestParseSignatureIIT(t *testing.T) {
+	c := mustCurve(t, 6)
+	pub, err := ParsePublicKey(c, mustHex(t, "018354bf05c8a16dcd3c2b4ccd342a6d758a781136993097561f64741b102c7a5d"))
+	if err != nil {
+		t.Fatalf("ParsePublicKey(test-ca root) error = %v", err)
+	}
+	sig := mustHex(t, iitSignature)
+	r, s, err := ParseSignature(sig)
+	if err != nil {
+		t.Fatalf("ParseSignature(%x) error = %v", sig, err)
+	}
+	hash := gost34311.Sum([]byte("abc"))
+	if !Verify(pub, hash[:], r, s) {
+		t.Errorf("Verify(ParseSignature(%x)) = false, want true", sig)
+	}
+	if got := MarshalSignature(c, r, s); !bytes.Equal(got, sig) {
+		t.Errorf("MarshalSignature(ParseSignature(%x)) = %x", sig, got)
+	}
+}
+
+func TestMarshalSignaturePadsToOrder(t *testing.T) {
+	tests := []struct {
+		curve int
+		r, s  string
+		want  string
+	}{
+		// curve 0: n has 163 bits, 21 bytes per value; little-endian, zero padding at the end
+		{0, "1", "0203", "010000000000000000000000000000000000000000" + "030200000000000000000000000000000000000000"},
+		{6, "8000000000000000000000000000000000000000000000000000000000000001", "ff",
+			"0100000000000000000000000000000000000000000000000000000000000080" + "ff00000000000000000000000000000000000000000000000000000000000000"},
+	}
+	for _, tt := range tests {
+		got := MarshalSignature(mustCurve(t, tt.curve), mustInt(t, tt.r), mustInt(t, tt.s))
+		if hex.EncodeToString(got) != tt.want {
+			t.Errorf("MarshalSignature(curve %d, %s, %s) = %x, want %s", tt.curve, tt.r, tt.s, got, tt.want)
+		}
+	}
+}
+
+// Bouncy Castle's JCA signature keeps the sign byte of BigInteger.toByteArray,
+// so an M257 signature can be 66 bytes; each half is still one little-endian value.
+func TestParseSignatureLongerHalves(t *testing.T) {
+	sig := mustHex(t, "0100"+"ff00")
+	r, s, err := ParseSignature(sig)
+	if err != nil {
+		t.Fatalf("ParseSignature(%x) error = %v", sig, err)
+	}
+	if r.Int64() != 1 || s.Int64() != 0xff {
+		t.Errorf("ParseSignature(%x) = %v, %v, want 1, 255", sig, r, s)
+	}
+}
+
+func TestParseSignatureRejects(t *testing.T) {
+	for _, in := range []string{"", "01", "010203"} {
+		if r, s, err := ParseSignature(mustHex(t, in)); err == nil {
+			t.Errorf("ParseSignature(%q) = %v, %v, want error", in, r, s)
+		}
+	}
+}
+
+func TestSignatureRoundTrip(t *testing.T) {
+	for id := range 10 {
+		c := mustCurve(t, id)
+		key, err := GenerateKey(c, rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		hash := gost34311.Sum([]byte("round trip"))
+		r, s, err := Sign(rand.Reader, key, hash[:])
+		if err != nil {
+			t.Fatal(err)
+		}
+		sig := MarshalSignature(c, r, s)
+		if want := 2 * ((c.n.BitLen() + 7) / 8); len(sig) != want {
+			t.Errorf("curve %d: len(MarshalSignature) = %d, want %d", id, len(sig), want)
+		}
+		pr, ps, err := ParseSignature(sig)
+		if err != nil {
+			t.Fatalf("curve %d: ParseSignature(%x) error = %v", id, sig, err)
+		}
+		if !Verify(key.Public(), hash[:], pr, ps) {
+			t.Errorf("curve %d: Verify(ParseSignature(MarshalSignature(r, s))) = false, want true", id)
+		}
+	}
+}

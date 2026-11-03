@@ -18,7 +18,7 @@ make
 |---|---|
 | [`main.go`](main.go) | `gen` — випадки від uacrypto; `verify` — перевірка чужих підписів |
 | [`java/Check.java`](java/Check.java) | Bouncy Castle 1.86 |
-| [`rust/src/main.rs`](rust/src/main.rs) | `ua-cryptography-*`, RustCrypto `kupyna`, `structured-dstu4145` |
+| [`rust/src/main.rs`](rust/src/main.rs) | `ua-cryptography-*` (зокрема `dstu7624` для Калини), RustCrypto `kupyna`, `structured-dstu4145` |
 
 ## Формати, які треба узгоджувати
 

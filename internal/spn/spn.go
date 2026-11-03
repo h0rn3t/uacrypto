@@ -1,8 +1,45 @@
-package kupyna
+// Package spn holds the primitives shared by the Kalyna block cipher
+// (DSTU 7624:2014) and the Kupyna hash function (DSTU 7564:2014), which is
+// built on the Kalyna round: the S-boxes, the MixColumns matrix and
+// multiplication in GF(2^8).
+package spn
 
-// sbox holds the four S-boxes of DSTU 7564:2014 (DSTU7564Digest.S0..S3 in
-// Bouncy Castle); state row r goes through sbox[r%4].
-var sbox = [4][256]byte{
+// MDS is the first row of the circulant MixColumns matrix.
+var MDS = [8]byte{0x01, 0x01, 0x05, 0x01, 0x08, 0x06, 0x07, 0x04}
+
+// Mul multiplies a and b in GF(2^8) modulo x^8+x^4+x^3+x^2+1 (0x11d).
+func Mul(a, b byte) byte {
+	var p byte
+	for b != 0 {
+		if b&1 != 0 {
+			p ^= a
+		}
+		hi := a & 0x80
+		a <<= 1
+		if hi != 0 {
+			a ^= 0x1d
+		}
+		b >>= 1
+	}
+	return p
+}
+
+// MixColumn multiplies the column col by the circulant matrix whose first
+// row is m.
+func MixColumn(m *[8]byte, col *[8]byte) {
+	var out [8]byte
+	for r := range 8 {
+		for k := range 8 {
+			out[r] ^= Mul(m[(k-r+8)%8], col[k])
+		}
+	}
+	*col = out
+}
+
+// Sbox holds the four S-boxes π0..π3 of DSTU 7624 and DSTU 7564
+// (DSTU7624Engine.S0..S3 and DSTU7564Digest.S0..S3 in Bouncy Castle); row r
+// of the state goes through Sbox[r%4].
+var Sbox = [4][256]byte{
 	{
 		0xa8, 0x43, 0x5f, 0x06, 0x6b, 0x75, 0x6c, 0x59, 0x71, 0xdf, 0x87, 0x95, 0x17, 0xf0, 0xd8, 0x09,
 		0x6d, 0xf3, 0x1d, 0xcb, 0xc9, 0x4d, 0x2c, 0xaf, 0x79, 0xe0, 0x97, 0xfd, 0x6f, 0x4b, 0x45, 0x39,

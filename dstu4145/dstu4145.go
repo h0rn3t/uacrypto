@@ -3,10 +3,9 @@
 //
 // The arithmetic, the point compression and the signature follow
 // DSTU4145Signer and DSTU4145PointEncoder of Bouncy Castle, and the results
-// interoperate with Bouncy Castle and the IIT library. The package works with
-// signature values (r, s) and the compressed public key only; how they are
-// packed into certificates and CMS (for example r||s little-endian) is left to
-// the caller.
+// interoperate with Bouncy Castle and the IIT library. Signatures are the
+// values (r, s); MarshalSignature and ParseSignature convert them to and from
+// r||s little-endian, the form of certificates, OCSP and CMS.
 //
 // The implementation uses math/big and is not constant-time: timing may leak
 // private keys. It is meant for testing and interoperability, not for
@@ -170,6 +169,34 @@ func Verify(k *PublicKey, hash []byte, r, s *big.Int) bool {
 		return false
 	}
 	return truncate(c.f.mul(c.hashToField(hash), R.x), c.n.BitLen()-1).Cmp(r) == 0
+}
+
+// MarshalSignature encodes (r, s) from Sign on curve c as r||s, each a
+// little-endian integer padded to the byte length of the order n: the form
+// Ukrainian CAs and the IIT library use in certificates, OCSP and CMS
+// (64 bytes on M257). It panics if r or s does not fit that length.
+func MarshalSignature(c *Curve, r, s *big.Int) []byte {
+	size := (c.n.BitLen() + 7) / 8
+	sig := make([]byte, 2*size)
+	r.FillBytes(sig[:size])
+	s.FillBytes(sig[size:])
+	slices.Reverse(sig[:size])
+	slices.Reverse(sig[size:])
+	return sig
+}
+
+// ParseSignature decodes r||s little-endian (see MarshalSignature). It takes
+// any non-empty even length and splits it in halves, so it also reads the
+// signatures of the Bouncy Castle JCA provider, whose halves can carry an
+// extra zero byte. Range checks are left to Verify.
+func ParseSignature(sig []byte) (r, s *big.Int, err error) {
+	if len(sig) == 0 || len(sig)%2 != 0 {
+		return nil, nil, fmt.Errorf("dstu4145: signature is %d bytes, want an even non-zero length", len(sig))
+	}
+	be := slices.Clone(sig)
+	slices.Reverse(be) // now s||r big-endian
+	half := len(be) / 2
+	return new(big.Int).SetBytes(be[half:]), new(big.Int).SetBytes(be[:half]), nil
 }
 
 // hashToField reads the hash as a little-endian integer truncated to m bits;

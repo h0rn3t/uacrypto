@@ -8,7 +8,8 @@
 //
 //	H <message> <gost34311> <kupyna256> <kupyna384> <kupyna512>
 //	C <key> <plaintext> <ciphertext>
-//	S <curve> <index> <d> <Q> <hash> <r> <s>
+//	K <key> <plaintext> <ciphertext>                   Kalyna; the block size is the plaintext length
+//	S <curve> <index> <d> <Q> <hash> <r> <s> <r||s>    r||s as dstu4145.MarshalSignature encodes it
 //
 // Signature lines from the other implementations:
 //
@@ -17,6 +18,7 @@ package main
 
 import (
 	"bufio"
+	"crypto/cipher"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -30,6 +32,7 @@ import (
 	"github.com/h0rn3t/uacrypto/dstu4145"
 	"github.com/h0rn3t/uacrypto/gost28147"
 	"github.com/h0rn3t/uacrypto/gost34311"
+	"github.com/h0rn3t/uacrypto/kalyna"
 	"github.com/h0rn3t/uacrypto/kupyna"
 )
 
@@ -96,6 +99,31 @@ func generate(w io.Writer) error {
 		}
 	}
 
+	kalynas := []struct {
+		newCipher func([]byte) (cipher.Block, error)
+		keySize   int
+	}{
+		{kalyna.NewCipher128, 16}, {kalyna.NewCipher128, 32},
+		{kalyna.NewCipher256, 32}, {kalyna.NewCipher256, 64},
+		{kalyna.NewCipher512, 64},
+	}
+	for _, k := range kalynas {
+		for range 60 {
+			key := make([]byte, k.keySize)
+			_, _ = rng.Read(key) // ChaCha8.Read never fails
+			block, err := k.newCipher(key)
+			if err != nil {
+				return err
+			}
+			plaintext, ciphertext := make([]byte, block.BlockSize()), make([]byte, block.BlockSize())
+			_, _ = rng.Read(plaintext)
+			block.Encrypt(ciphertext, plaintext)
+			if _, err := fmt.Fprintln(w, "K", encode(key), encode(plaintext), encode(ciphertext)); err != nil {
+				return err
+			}
+		}
+	}
+
 	// hash lengths per curve: GOST 34.311 and Kupyna digests, a 1-byte hash and
 	// a zero hash, which DSTU 4145 replaces with 1
 	hashLengths := []int{32, 32, 32, 32, 32, 32, 64, 48, 1, 0}
@@ -118,7 +146,7 @@ func generate(w io.Writer) error {
 			if err != nil {
 				return err
 			}
-			if _, err := fmt.Fprintln(w, "S", id, i, encode(key.Bytes()), encode(key.Public().Bytes()), encode(hash), rr.Text(16), ss.Text(16)); err != nil {
+			if _, err := fmt.Fprintln(w, "S", id, i, encode(key.Bytes()), encode(key.Public().Bytes()), encode(hash), rr.Text(16), ss.Text(16), encode(dstu4145.MarshalSignature(c, rr, ss))); err != nil {
 				return err
 			}
 		}

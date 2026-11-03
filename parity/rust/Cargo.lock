@@ -317,6 +317,7 @@ dependencies = [
  "structured-dstu4145",
  "ua-cryptography-dstu4145",
  "ua-cryptography-dstu7564",
+ "ua-cryptography-dstu7624",
  "ua-cryptography-gost",
 ]
 
@@ -492,6 +493,15 @@ name = "ua-cryptography-dstu7564"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "98e2cbf2daa6f2660c39f502d960216455524e5378f3f0fe21fc6e49fe261d14"
+dependencies = [
+ "ua-cryptography-dstu-sboxes",
+]
+
+[[package]]
+name = "ua-cryptography-dstu7624"
+version = "0.1.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6d108443aeb70847d981d6cab637e46999c510d190737f012e3acaf992548613"
 dependencies = [
  "ua-cryptography-dstu-sboxes",
 ]
