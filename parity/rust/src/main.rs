@@ -10,6 +10,10 @@ use ua_cryptography_dstu4145::{decode_signature, encode_signature, get_polynomia
 use ua_cryptography_dstu7564::{HashSize, Kupyna};
 use ua_cryptography_dstu7624::{BlockSize, Kalyna};
 use ua_cryptography_gost::{Gost28147, Gost34311, DEFAULT_DKE};
+use ua_cryptography_pki::{
+    cades_verifier, oids, CadesOptions, CadesSigner, Certificate, CertificateBuilder, CheckStatus, DistinguishedName,
+    Dstu4145PrivateKey, SignatureServices, SigningKey, ValidationOptions,
+};
 
 const DEGREES: [usize; 10] = [163, 167, 173, 179, 191, 233, 257, 307, 367, 431];
 
@@ -23,8 +27,60 @@ fn rev(b: &[u8]) -> Vec<u8> {
     b.iter().rev().copied().collect()
 }
 
+/// CMS-підписи ua-cryptography-pki для Go: ключ, самопідписаний сертифікат, CAdES-B з Купиною і ГОСТ 34.311,
+/// з вмістом і без. Рядок: R <крива> <d> <сертифікат> <геш> <detached> <вміст> <підпис>.
+fn cms_gen(path: &str) {
+    let mut out = std::fs::File::create(path).unwrap();
+    for (i, id) in [6usize, 6, 6, 6, 9, 3, 0].into_iter().enumerate() {
+        let domain = get_polynomial_curve_by_index(id).unwrap();
+        let key = Dstu4145PrivateKey::generate(&domain);
+        let name = DistinguishedName::parse(&format!("CN=uacrypto parity {i}, C=UA")).unwrap();
+        let cert = CertificateBuilder::new(name, key.public_key().clone()).unwrap().self_sign(&key).unwrap();
+        let signer = SigningKey::new(key.clone(), vec![cert.clone()]).unwrap();
+        for (hash, hname) in [(oids::DSTU7564_256, "kupyna"), (oids::GOST34311, "gost")] {
+            for detached in [false, true] {
+                let content: Vec<u8> = (0..[0usize, 1, 100, 5000][i % 4]).map(|j| (i * 31 + j) as u8).collect();
+                let options = CadesOptions { hash_oid: hash.to_owned(), is_detached: detached, ..CadesOptions::default() };
+                let sig = CadesSigner::new(signer.clone(), SignatureServices::default()).sign(&content, &options).unwrap();
+                writeln!(out, "R {id} {} {} {hname} {} {} {}", hex::encode(key.d().to_bytes_be()), hex::encode(cert.encoded()),
+                    detached as u8, x(&content), hex::encode(&sig)).unwrap();
+            }
+        }
+    }
+}
+
+/// Перевіряє CMS-підписи, які зробив uacrypto: G <сертифікат> <геш> <detached> <вміст> <підпис>.
+fn cms_verify(path: &str) {
+    let (mut ok, mut bad) = (0, 0);
+    for line in std::fs::read_to_string(path).unwrap().lines() {
+        let f: Vec<&str> = line.split(' ').collect();
+        let cert = Certificate::load(&h(f[1])).unwrap();
+        let content = h(f[4]);
+        let detached = (f[3] == "1").then_some(content.as_slice());
+        let options = ValidationOptions { trust_anchors: vec![cert], ..ValidationOptions::default() };
+        let result = cades_verifier::verify(&h(f[5]), detached, &options).unwrap();
+        if result.is_valid() {
+            ok += 1;
+        } else {
+            bad += 1;
+            for check in result.signatures.iter().flat_map(|r| &r.checks).filter(|c| c.status == CheckStatus::Failed) {
+                eprintln!("FAILED {} {}: {}", f[2], check.name, check.details);
+            }
+        }
+    }
+    println!("ua-cryptography-pki       verify uacrypto CMS ({:>3})       {ok:4} ok {bad} mismatch", "all");
+    if bad > 0 {
+        std::process::exit(1);
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    match args[1].as_str() {
+        "cms-gen" => return cms_gen(&args[2]),
+        "cms-verify" => return cms_verify(&args[2]),
+        _ => {}
+    }
     let input = BufReader::new(std::fs::File::open(&args[1]).unwrap());
     let mut out = std::fs::File::create(&args[2]).unwrap();
     let mut stats: BTreeMap<String, (u32, u32)> = BTreeMap::new();

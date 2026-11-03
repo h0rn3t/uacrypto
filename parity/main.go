@@ -4,6 +4,7 @@
 //	parity gen > cases.txt          deterministic random cases computed by uacrypto
 //	parity verify signatures.txt    checks signatures made by the other implementations
 //	parity czo CACertificates.p7b   checks every DSTU 4145 certificate of the CZO bundle against its issuer
+//	parity cms rust.txt go.txt      checks the CMS signatures of ua-cryptography-pki and signs with the same keys
 //
 // Case lines are space-separated hex ("-" for an empty value):
 //
@@ -21,6 +22,7 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/cipher"
+	crand "crypto/rand"
 	"crypto/x509"
 	"encoding/asn1"
 	"encoding/hex"
@@ -61,8 +63,10 @@ func run(args []string, out io.Writer) error {
 		return verify(args[1], out)
 	case len(args) == 2 && args[0] == "czo":
 		return checkBundle(args[1], out)
+	case len(args) == 3 && args[0] == "cms":
+		return checkCMS(args[1], args[2], out)
 	}
-	return errors.New("usage: parity gen | parity verify <signatures.txt> | parity czo <CACertificates.p7b>")
+	return errors.New("usage: parity gen | parity verify <signatures.txt> | parity czo <CACertificates.p7b> | parity cms <rust.txt> <go.txt>")
 }
 
 func encode(b []byte) string {
@@ -299,4 +303,88 @@ func checkBundle(path string, out io.Writer) error {
 		return fmt.Errorf("%d certificates rejected", rejected)
 	}
 	return nil
+}
+
+// checkCMS reads the lines R <curve> <d> <certificate> <hash> <detached> <content> <signature>
+// of ua-cryptography-pki, checks the self-signed certificate and the CMS
+// signature, and signs the same content with the same key and options into
+// goPath as G <certificate> <hash> <detached> <content> <signature>.
+func checkCMS(rustPath, goPath string, out io.Writer) error {
+	data, err := os.ReadFile(rustPath) //nolint:gosec // G703: the operator names the file on the command line
+	if err != nil {
+		return err
+	}
+	var signed strings.Builder
+	var certsOK, cmsOK int
+	var report strings.Builder
+	for line := range strings.Lines(string(data)) {
+		f := strings.Fields(line)
+		if len(f) != 8 || f[0] != "R" {
+			return fmt.Errorf("malformed line %q", line)
+		}
+		id, err := strconv.Atoi(f[1])
+		if err != nil {
+			return err
+		}
+		c, err := dstu4145.NamedCurve(id)
+		if err != nil {
+			return err
+		}
+		d, certDER, sig := decode(f[2]), decode(f[3]), decode(f[7])
+		content := decode(f[6])
+		key, err := dstu4145.NewPrivateKey(c, d)
+		if err != nil {
+			return err
+		}
+		cert, err := x509.ParseCertificate(certDER)
+		if err != nil {
+			return err
+		}
+		tag := fmt.Sprintf("curve %d %s detached=%s", id, f[4], f[5])
+		if err := pki.CheckCertificateSignature(cert, cert); err != nil {
+			fmt.Fprintf(&report, "MISMATCH certificate %s: %v\n", tag, err)
+		} else {
+			certsOK++
+		}
+		var detached []byte
+		if f[5] == "1" {
+			detached = content
+		}
+		if _, _, err := pki.VerifySignedData(sig, detached, nil); err != nil {
+			fmt.Fprintf(&report, "MISMATCH CMS %s: %v\n", tag, err)
+		} else {
+			cmsOK++
+		}
+
+		own, err := pki.SignData(crand.Reader, content, key, cert, pki.SignOptions{Detached: f[5] == "1", GOST34311: f[4] == "gost"})
+		if err != nil {
+			return fmt.Errorf("SignData %s: %w", tag, err)
+		}
+		fmt.Fprintln(&signed, "G", f[3], f[4], f[5], f[6], encode(own))
+	}
+	if err := os.WriteFile(goPath, []byte(signed.String()), 0o600); err != nil { //nolint:gosec // G703: the operator names the file on the command line
+		return err
+	}
+	total := strings.Count(string(data), "\n")
+	fmt.Fprintf(&report, "uacrypto verifies ua-cryptography-pki certificates %4d ok %d rejected\n", certsOK, total-certsOK)
+	fmt.Fprintf(&report, "uacrypto verifies ua-cryptography-pki CMS          %4d ok %d rejected\n", cmsOK, total-cmsOK)
+	if _, err := io.WriteString(out, report.String()); err != nil {
+		return err
+	}
+	if certsOK != total || cmsOK != total {
+		return errors.New("ua-cryptography-pki signatures rejected")
+	}
+	return nil
+}
+
+// decode reads a hex field, "-" for empty, as a non-nil slice.
+func decode(s string) []byte {
+	if s == "-" {
+		return []byte{}
+	}
+	b, err := hex.DecodeString(s)
+	if err != nil {
+		panic(fmt.Sprintf("parity: bad hex %q", s))
+	}
+	return b
 }

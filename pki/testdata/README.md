@@ -18,3 +18,12 @@
 | `dksu-ocsp-be.der` | OCSP-сервер АЦСК ДКСУ, ключ з OID `dstu4145be` | `dksu-ca.der` |
 | `monobank-ca.der` | КНЕДП monobank \| Universal Bank | — |
 | `monobank-cmp-kupyna512.der` | CMP-сервер КНЕДП monobank, підпис ДСТУ 4145 + Купина-512 | `monobank-ca.der` |
+
+Позначки часу (RFC 3161), отримані 2026-11-04 від публічних TSA на запит із гешем рядка
+`uacrypto test`; у файлі — сам токен, CMS SignedData з TSTInfo:
+
+| Файл | TSA | Геш і підпис |
+|---|---|---|
+| `tsa-tax-gost.p7s` | http://ca.tax.gov.ua/services/tsp/ | ГОСТ 34.311, `dstu4145le` |
+| `tsa-privatbank-gost.p7s` | http://acsk.privatbank.ua/services/tsp/ | ГОСТ 34.311, `dstu4145le` |
+| `tsa-diia-kupyna.p7s` | http://ca.diia.gov.ua/services/tsp/ | Купина-256, ДСТУ 4145 + Купина-256 |

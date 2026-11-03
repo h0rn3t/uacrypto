@@ -13,10 +13,18 @@ OUT        := out
 JAVA       ?= java
 JAVAC      ?= javac
 
-.PHONY: all czo clean
-all: $(OUT)/cases.txt $(OUT)/bc_sigs.txt $(OUT)/rust_sigs.txt
+.PHONY: all cms czo clean
+all: $(OUT)/cases.txt $(OUT)/bc_sigs.txt $(OUT)/rust_sigs.txt cms
 	cat $(OUT)/bc_sigs.txt $(OUT)/rust_sigs.txt > $(OUT)/foreign_sigs.txt
 	go run . verify $(OUT)/foreign_sigs.txt
+
+# CMS: ua-cryptography-pki випускає ключі й сертифікати та підписує, uacrypto перевіряє і підписує тими самими
+# ключами, ua-cryptography-pki перевіряє підписи uacrypto
+cms: rust/src/main.rs rust/Cargo.toml rust/Cargo.lock main.go $(wildcard ../*/*.go)
+	mkdir -p $(OUT)
+	cargo run --release --locked -q --manifest-path rust/Cargo.toml -- cms-gen $(OUT)/rust_cms.txt
+	go run . cms $(OUT)/rust_cms.txt $(OUT)/go_cms.txt
+	cargo run --release --locked -q --manifest-path rust/Cargo.toml -- cms-verify $(OUT)/go_cms.txt
 
 $(OUT)/cases.txt: main.go $(wildcard ../*/*.go)
 	mkdir -p $(OUT)
