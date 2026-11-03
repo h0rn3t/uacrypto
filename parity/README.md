@@ -16,7 +16,7 @@ make
 
 | Файл | Що робить |
 |---|---|
-| [`main.go`](main.go) | `gen` — випадки від uacrypto; `verify` — перевірка чужих підписів; `cms` — звірка CMS; `czo` — корпус ЦЗО |
+| [`main.go`](main.go) | `gen` — випадки від uacrypto; `verify` — перевірка чужих підписів; `cms` — звірка CMS; `tsa` — CAdES-T зі справжнім TSA; `czo` — корпус ЦЗО |
 | [`java/Check.java`](java/Check.java) | Bouncy Castle 1.86 |
 | [`rust/src/main.rs`](rust/src/main.rs) | `ua-cryptography-*` (зокрема `dstu7624` для Калини і `pki` для CMS), RustCrypto `kupyna`, `structured-dstu4145` |
 

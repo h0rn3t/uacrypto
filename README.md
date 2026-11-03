@@ -20,7 +20,7 @@
 | [`gost34311`](https://pkg.go.dev/github.com/h0rn3t/uacrypto/gost34311) | ГОСТ 34.311-95 — функція гешування | `hash.Hash`, ДКЕ №1 за замовчуванням або власний S-блок |
 | [`kupyna`](https://pkg.go.dev/github.com/h0rn3t/uacrypto/kupyna) | ДСТУ 7564:2014 «Купина» — функція гешування | `hash.Hash` на 256, 384 і 512 біт |
 | [`kalyna`](https://pkg.go.dev/github.com/h0rn3t/uacrypto/kalyna) | ДСТУ 7624:2014 «Калина» — блоковий шифр | `cipher.Block` з блоком 128, 256 і 512 біт і всіма ключами стандарту |
-| [`pki`](https://pkg.go.dev/github.com/h0rn3t/uacrypto/pki) | X.509 і CMS з ДСТУ 4145 | ключ ДСТУ 4145 із сертифіката (явні параметри чи OID кривої, ДКЕ, le/be), перевірка підпису сертифіката (ГОСТ 34.311, Купина-256, Купина-512), створення й перевірка CMS SignedData: файлів `.p7s` (CAdES-BES) і позначок часу |
+| [`pki`](https://pkg.go.dev/github.com/h0rn3t/uacrypto/pki) | X.509 і CMS з ДСТУ 4145 | ключ ДСТУ 4145 із сертифіката (явні параметри чи OID кривої, ДКЕ, le/be), перевірка підпису сертифіката (ГОСТ 34.311, Купина-256, Купина-512), створення й перевірка CMS SignedData: файлів `.p7s` (CAdES-BES і CAdES-T) і позначок часу RFC 3161, клієнт TSP |
 | [`gost28147`](https://pkg.go.dev/github.com/h0rn3t/uacrypto/gost28147) | ГОСТ 28147-89 — блоковий шифр | `cipher.Block`, ДКЕ №1 і розпакування ДКЕ з параметрів ключа |
 
 ## Встановлення
@@ -106,6 +106,7 @@ key, err := pki.ParsePublicKey(cert.RawSubjectPublicKeyInfo) // *dstu4145.Public
 
 ```go
 content, signers, err := pki.VerifySignedData(p7s, nil, nil)      // вміст усередині підпису
+// signers[i].Certificate, .SigningTime (заява підписувача), .TimeStamp (перевірена позначка CAdES-T)
 _, signers, err = pki.VerifySignedData(p7s, document, nil)         // відокремлений підпис
 _, signers, err = pki.VerifySignedData(p7s, nil, []*x509.Certificate{signerCert}) // сертифіката немає в підписі
 ```
@@ -124,7 +125,22 @@ p7s, err := pki.SignData(rand.Reader, document, key, cert, pki.SignOptions{Detac
 Підпис має ту форму, яку пишуть українські кваліфіковані засоби: атрибути `contentType`,
 `signingTime`, `messageDigest`, `signingCertificateV2`, геш Купина-256 (або ГОСТ 34.311 з
 `GOST34311: true`), підписувач — за видавцем і серійним номером, значення підпису `r‖s` little-endian.
-Позначок часу (CAdES-T) і даних для довготривалої перевірки поки немає.
+Даних для довготривалої перевірки (CAdES-LT) поки немає.
+
+### Позначка часу (TSP, CAdES-T)
+
+```go
+tsa := &pki.TSAClient{URL: "http://ca.diia.gov.ua/services/tsp/"}
+cadesT, err := pki.AddSignatureTimeStamp(ctx, p7s, tsa) // позначка на значенні підпису кожного підписувача
+
+token, ts, err := tsa.TimeStamp(ctx, data) // окрема позначка часу для даних
+ts, err = pki.VerifyTimeStamp(token, data)
+fmt.Println(ts.Time, ts.Certificate.Subject.CommonName)
+```
+
+Клієнт надсилає запит із nonce і геш Купина-256 (або ГОСТ 34.311 з `GOST34311: true`) і приймає
+лише токен, який перевіряється: підпис ДСТУ 4145, сертифікат TSA з призначенням timeStamping,
+геш даних і повернений nonce. Для CAdES-T геш береться той самий, що й у підписувача.
 
 ### Збереження приватного ключа
 
@@ -199,7 +215,8 @@ h, err := gost34311.NewWithSbox(sbox)
 [`ua-cryptography-pki`](https://crates.io/crates/ua-cryptography-pki) 0.1.6 випускає ключі й самопідписані
 сертифікати на кривих 163, 179, 257 і 431 біт і підписує CAdES-B; uacrypto перевіряє ці сертифікати й
 підписи, підписує тими самими ключами, а `ua-cryptography-pki` перевіряє підписи uacrypto разом із
-`signingCertificateV2`.
+`signingCertificateV2`. `make tsa` (мережа) робить CAdES-T з позначками справжнього TSA Дії: uacrypto
+перевіряє CAdES-T `ua-cryptography-pki`, а той — CAdES-T uacrypto разом із ланцюжком TSA до кореня ЦЗО.
 
 | Реалізація | ГОСТ 34.311 | Купина 256/384/512 | ГОСТ 28147 | Калина ¹ | ДСТУ 4145: ключ з d, розбір ключа, перевірка підпису uacrypto | uacrypto перевіряє їхні підписи |
 |---|:-:|:-:|:-:|:-:|:-:|:-:|
@@ -236,7 +253,8 @@ h, err := gost34311.NewWithSbox(sbox)
 - [x] X.509: ключ ДСТУ 4145 і перевірка підпису сертифіката
 - [x] CMS SignedData: перевірка підписів (`.p7s`, позначки часу)
 - [x] Створення підписів CMS (CAdES-BES)
-- [ ] CAdES-T і довготривалі підписи; розбір TSTInfo; OCSP, PKCS#10; випуск сертифікатів; CMS у BER
+- [x] TSP: клієнт, перевірка позначок часу, CAdES-T
+- [ ] CAdES-LT (дані для довготривалої перевірки); OCSP, PKCS#10; випуск сертифікатів; CMS у BER
 - [x] Кодування підпису `r || s` як частина API
 - [x] ДСТУ 7624:2014 «Калина» (блоковий шифр)
 - [ ] Режими «Калини» з ДСТУ 7624: CMAC, GCM, CCM, XTS, обгортання ключів

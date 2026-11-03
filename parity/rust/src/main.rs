@@ -11,8 +11,8 @@ use ua_cryptography_dstu7564::{HashSize, Kupyna};
 use ua_cryptography_dstu7624::{BlockSize, Kalyna};
 use ua_cryptography_gost::{Gost28147, Gost34311, DEFAULT_DKE};
 use ua_cryptography_pki::{
-    cades_verifier, oids, CadesOptions, CadesSigner, Certificate, CertificateBuilder, CheckStatus, DistinguishedName,
-    Dstu4145PrivateKey, SignatureServices, SigningKey, ValidationOptions,
+    cades_verifier, certificate_files, oids, CadesOptions, CadesSigner, Certificate, CertificateBuilder, CheckStatus, DistinguishedName,
+    Dstu4145PrivateKey, HttpTimeStampService, SignatureLevel, SignatureServices, SigningKey, ValidationOptions,
 };
 
 const DEGREES: [usize; 10] = [163, 167, 173, 179, 191, 233, 257, 307, 367, 431];
@@ -49,15 +49,38 @@ fn cms_gen(path: &str) {
     }
 }
 
+/// CAdES-T ua-cryptography-pki з позначкою часу справжнього TSA: T <сертифікат> <геш> <вміст> <підпис>.
+fn cades_t(url: &str, path: &str) {
+    let mut out = std::fs::File::create(path).unwrap();
+    let tsa = HttpTimeStampService::new(url);
+    let domain = get_polynomial_curve_by_index(6).unwrap();
+    let key = Dstu4145PrivateKey::generate(&domain);
+    let name = DistinguishedName::parse("CN=uacrypto parity CAdES-T, C=UA").unwrap();
+    let cert = CertificateBuilder::new(name, key.public_key().clone()).unwrap().self_sign(&key).unwrap();
+    let signer = SigningKey::new(key, vec![cert.clone()]).unwrap();
+    for (hash, hname) in [(oids::DSTU7564_256, "kupyna"), (oids::GOST34311, "gost")] {
+        let content = format!("uacrypto CAdES-T {hname}").into_bytes();
+        let services = SignatureServices { time_stamps: Some(&tsa), ..SignatureServices::default() };
+        let options = CadesOptions { hash_oid: hash.to_owned(), level: SignatureLevel::T, ..CadesOptions::default() };
+        let sig = CadesSigner::new(signer.clone(), services).sign(&content, &options).unwrap();
+        writeln!(out, "T {} {hname} {} {}", hex::encode(cert.encoded()), x(&content), hex::encode(&sig)).unwrap();
+    }
+}
+
 /// Перевіряє CMS-підписи, які зробив uacrypto: G <сертифікат> <геш> <detached> <вміст> <підпис>.
-fn cms_verify(path: &str) {
+/// bundle — пакет сертифікатів ЦСК (ЦЗО), щоб довіряти TSA: самопідписані з нього стають коренями.
+fn cms_verify(path: &str, bundle: Option<&str>) {
+    let ca = bundle.map(|b| certificate_files::parse(&std::fs::read(b).unwrap()).unwrap()).unwrap_or_default();
+    let (roots, intermediates): (Vec<Certificate>, Vec<Certificate>) = ca.into_iter().partition(|c| c.is_signed_by(c));
     let (mut ok, mut bad) = (0, 0);
     for line in std::fs::read_to_string(path).unwrap().lines() {
         let f: Vec<&str> = line.split(' ').collect();
         let cert = Certificate::load(&h(f[1])).unwrap();
         let content = h(f[4]);
         let detached = (f[3] == "1").then_some(content.as_slice());
-        let options = ValidationOptions { trust_anchors: vec![cert], ..ValidationOptions::default() };
+        let mut trust_anchors = roots.clone();
+        trust_anchors.push(cert);
+        let options = ValidationOptions { trust_anchors, extra_certificates: intermediates.clone(), ..ValidationOptions::default() };
         let result = cades_verifier::verify(&h(f[5]), detached, &options).unwrap();
         if result.is_valid() {
             ok += 1;
@@ -78,7 +101,8 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     match args[1].as_str() {
         "cms-gen" => return cms_gen(&args[2]),
-        "cms-verify" => return cms_verify(&args[2]),
+        "cms-verify" => return cms_verify(&args[2], args.get(3).map(String::as_str)),
+        "cades-t" => return cades_t(&args[2], &args[3]),
         _ => {}
     }
     let input = BufReader::new(std::fs::File::open(&args[1]).unwrap());

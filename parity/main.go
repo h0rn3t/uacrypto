@@ -5,6 +5,8 @@
 //	parity verify signatures.txt    checks signatures made by the other implementations
 //	parity czo CACertificates.p7b   checks every DSTU 4145 certificate of the CZO bundle against its issuer
 //	parity cms rust.txt go.txt      checks the CMS signatures of ua-cryptography-pki and signs with the same keys
+//	parity tsa URL rust_cms.txt rust_t.txt go.txt
+//	                                checks the CAdES-T of ua-cryptography-pki and makes CAdES-T with the TSA at URL
 //
 // Case lines are space-separated hex ("-" for an empty value):
 //
@@ -21,6 +23,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/cipher"
 	crand "crypto/rand"
 	"crypto/x509"
@@ -35,6 +38,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/h0rn3t/uacrypto/dstu4145"
 	"github.com/h0rn3t/uacrypto/gost28147"
@@ -65,8 +69,10 @@ func run(args []string, out io.Writer) error {
 		return checkBundle(args[1], out)
 	case len(args) == 3 && args[0] == "cms":
 		return checkCMS(args[1], args[2], out)
+	case len(args) == 5 && args[0] == "tsa":
+		return checkCAdEST(args[1], args[2], args[3], args[4], out)
 	}
-	return errors.New("usage: parity gen | parity verify <signatures.txt> | parity czo <CACertificates.p7b> | parity cms <rust.txt> <go.txt>")
+	return errors.New("usage: parity gen | parity verify <signatures.txt> | parity czo <CACertificates.p7b> | parity cms <rust.txt> <go.txt> | parity tsa <URL> <rust_cms.txt> <rust_t.txt> <go.txt>")
 }
 
 func encode(b []byte) string {
@@ -387,4 +393,81 @@ func decode(s string) []byte {
 		panic(fmt.Sprintf("parity: bad hex %q", s))
 	}
 	return b
+}
+
+// checkCAdEST verifies the CAdES-T lines T <certificate> <hash> <content> <signature>
+// of ua-cryptography-pki, then signs with the first two keys of rustCMS,
+// stamps the signatures at the TSA url and writes them to goPath in the G
+// format of checkCMS.
+func checkCAdEST(url, rustCMS, rustT, goPath string, out io.Writer) error {
+	var report strings.Builder
+	data, err := os.ReadFile(rustT) //nolint:gosec // G703: the operator names the file on the command line
+	if err != nil {
+		return err
+	}
+	for line := range strings.Lines(string(data)) {
+		f := strings.Fields(line)
+		if len(f) != 5 || f[0] != "T" {
+			return fmt.Errorf("malformed line %q", line)
+		}
+		_, signers, err := pki.VerifySignedData(decode(f[4]), nil, nil)
+		if err != nil {
+			return fmt.Errorf("ua-cryptography-pki CAdES-T %s: %w", f[2], err)
+		}
+		ts := signers[0].TimeStamp
+		if ts == nil {
+			return fmt.Errorf("ua-cryptography-pki CAdES-T %s carries no signature time-stamp", f[2])
+		}
+		fmt.Fprintf(&report, "uacrypto verifies ua-cryptography-pki CAdES-T %-6s ok: stamped %s by %s\n", f[2], ts.Time.Format(time.RFC3339), ts.Certificate.Subject.CommonName)
+	}
+
+	data, err = os.ReadFile(rustCMS) //nolint:gosec // G703: the operator names the file on the command line
+	if err != nil {
+		return err
+	}
+	tsa := &pki.TSAClient{URL: url}
+	var signed strings.Builder
+	for line := range strings.Lines(string(data)) {
+		f := strings.Fields(line)
+		if f[1] != "6" || f[5] != "0" { // M257 keys, attached content
+			continue
+		}
+		c, err := dstu4145.NamedCurve(6)
+		if err != nil {
+			return err
+		}
+		key, err := dstu4145.NewPrivateKey(c, decode(f[2]))
+		if err != nil {
+			return err
+		}
+		cert, err := x509.ParseCertificate(decode(f[3]))
+		if err != nil {
+			return err
+		}
+		content := []byte("uacrypto CAdES-T " + f[4])
+		bes, err := pki.SignData(crand.Reader, content, key, cert, pki.SignOptions{GOST34311: f[4] == "gost"})
+		if err != nil {
+			return err
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		cadesT, err := pki.AddSignatureTimeStamp(ctx, bes, tsa)
+		cancel()
+		if err != nil {
+			return fmt.Errorf("AddSignatureTimeStamp %s: %w", f[4], err)
+		}
+		_, signers, err := pki.VerifySignedData(cadesT, nil, nil)
+		if err != nil || signers[0].TimeStamp == nil {
+			return fmt.Errorf("uacrypto CAdES-T %s does not verify: %v", f[4], err)
+		}
+		fmt.Fprintf(&report, "uacrypto CAdES-T %-6s stamped %s by %s\n", f[4], signers[0].TimeStamp.Time.Format(time.RFC3339), signers[0].TimeStamp.Certificate.Subject.CommonName)
+		fmt.Fprintln(&signed, "G", f[3], f[4], "0", encode(content), encode(cadesT))
+		if strings.Count(signed.String(), "\n") == 2 {
+			break
+		}
+	}
+	if err := os.WriteFile(goPath, []byte(signed.String()), 0o600); err != nil { //nolint:gosec // G703: the operator names the file on the command line
+		return err
+	}
+	_, err = io.WriteString(out, report.String())
+	return err
 }

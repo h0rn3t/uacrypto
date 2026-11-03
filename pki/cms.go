@@ -25,6 +25,17 @@ var (
 	oidSigningCertV2 = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 9, 16, 2, 47}
 )
 
+// A Signer is a signer of a SignedData whose signature VerifySignedData verified.
+type Signer struct {
+	Certificate *x509.Certificate
+	// SigningTime is the signingTime attribute, zero when absent. It is what
+	// the signer claims; only TimeStamp proves a time.
+	SigningTime time.Time
+	// TimeStamp is the verified signatureTimeStampToken of a CAdES-T
+	// signature, nil when the signature has none.
+	TimeStamp *TimeStamp
+}
+
 type attribute struct {
 	Type   asn1.ObjectIdentifier
 	Values asn1.RawValue `asn1:"set"`
@@ -40,52 +51,89 @@ type signerInfo struct {
 	UnsignedAttrs      asn1.RawValue `asn1:"optional,tag:1"`
 }
 
-// VerifySignedData verifies a DER CMS SignedData (RFC 5652) whose signers use
-// DSTU 4145, as IIT-compatible software, Ukrainian TSAs and Bouncy Castle
-// write it. Every SignerInfo must verify. When the SignedData carries no
-// content, detached is the signed content; otherwise detached must be nil.
-// The signer certificates are looked up in the SignedData and then in certs.
-//
-// VerifySignedData returns the content and the certificate of each signer in
-// SignerInfo order. It checks signatures only: the signer certificates are
-// not checked against any trust anchor. A signature or message digest that
-// does not match is ErrInvalidSignature.
-func VerifySignedData(der, detached []byte, certs []*x509.Certificate) (content []byte, signers []*x509.Certificate, err error) {
+// signedData keeps the parts it does not change as raw DER, so that a parsed
+// SignedData marshals back to the same bytes.
+type signedData struct {
+	Version          int
+	DigestAlgorithms asn1.RawValue
+	Encap            asn1.RawValue // EncapsulatedContentInfo
+	Certificates     asn1.RawValue `asn1:"optional,tag:0"`
+	CRLs             asn1.RawValue `asn1:"optional,tag:1"`
+	SignerInfos      []signerInfo  `asn1:"set"`
+}
+
+// parseSignedData reads a ContentInfo holding a SignedData.
+func parseSignedData(der []byte) (*signedData, error) {
 	// encoding/asn1 keeps the [0] EXPLICIT wrapper in a RawValue: Bytes is the inner value
 	var ci struct {
 		ContentType asn1.ObjectIdentifier
 		Content     asn1.RawValue `asn1:"explicit,tag:0"`
 	}
 	if err := unmarshal(der, &ci); err != nil {
-		return nil, nil, fmt.Errorf("pki: ContentInfo: %w", err)
+		return nil, fmt.Errorf("pki: ContentInfo: %w", err)
 	}
 	if !ci.ContentType.Equal(oidSignedData) {
-		return nil, nil, fmt.Errorf("pki: content type %v is not SignedData", ci.ContentType)
+		return nil, fmt.Errorf("pki: content type %v is not SignedData", ci.ContentType)
 	}
-	var sd struct {
-		Version          int
-		DigestAlgorithms asn1.RawValue
-		Encap            struct {
-			Type    asn1.ObjectIdentifier
-			Content asn1.RawValue `asn1:"optional,explicit,tag:0"`
-		}
-		Certificates asn1.RawValue `asn1:"optional,tag:0"`
-		CRLs         asn1.RawValue `asn1:"optional,tag:1"`
-		SignerInfos  []signerInfo  `asn1:"set"`
+	sd := new(signedData)
+	if err := unmarshal(ci.Content.Bytes, sd); err != nil {
+		return nil, fmt.Errorf("pki: SignedData: %w", err)
 	}
-	if err := unmarshal(ci.Content.Bytes, &sd); err != nil {
-		return nil, nil, fmt.Errorf("pki: SignedData: %w", err)
+	return sd, nil
+}
+
+// marshal returns sd in a ContentInfo.
+func (sd *signedData) marshal() ([]byte, error) {
+	inner, err := asn1.Marshal(*sd)
+	if err != nil {
+		return nil, fmt.Errorf("pki: SignedData: %w", err)
+	}
+	return asn1.Marshal(struct {
+		Type    asn1.ObjectIdentifier
+		Content asn1.RawValue
+	}{oidSignedData, asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: 0, IsCompound: true, Bytes: inner}})
+}
+
+// VerifySignedData verifies a DER CMS SignedData (RFC 5652) whose signers use
+// DSTU 4145, as IIT-compatible software, Ukrainian TSAs and Bouncy Castle
+// write it. Every SignerInfo must verify, and so must the signature
+// time-stamp of a CAdES-T signer. When the SignedData carries no content,
+// detached is the signed content; otherwise detached must be nil. The signer
+// certificates are looked up in the SignedData and then in certs.
+//
+// VerifySignedData returns the content and the signers in SignerInfo order. It
+// checks signatures only: the signer certificates are not checked against any
+// trust anchor. A signature or message digest that does not match is
+// ErrInvalidSignature.
+func VerifySignedData(der, detached []byte, certs []*x509.Certificate) (content []byte, signers []Signer, err error) {
+	_, content, signers, err = verifySignedData(der, detached, certs)
+	return content, signers, err
+}
+
+// verifySignedData is VerifySignedData that also returns the content type.
+func verifySignedData(der, detached []byte, certs []*x509.Certificate) (asn1.ObjectIdentifier, []byte, []Signer, error) {
+	sd, err := parseSignedData(der)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	var encap struct {
+		Type    asn1.ObjectIdentifier
+		Content asn1.RawValue `asn1:"optional,explicit,tag:0"`
+	}
+	if err := unmarshal(sd.Encap.FullBytes, &encap); err != nil {
+		return nil, nil, nil, fmt.Errorf("pki: EncapsulatedContentInfo: %w", err)
 	}
 
-	attached := sd.Encap.Content.FullBytes != nil
+	var content []byte
+	attached := encap.Content.FullBytes != nil
 	switch {
 	case attached && detached != nil:
-		return nil, nil, errors.New("pki: SignedData carries its content, but detached content was given")
+		return nil, nil, nil, errors.New("pki: SignedData carries its content, but detached content was given")
 	case !attached && detached == nil:
-		return nil, nil, errors.New("pki: SignedData carries no content and no detached content was given")
+		return nil, nil, nil, errors.New("pki: SignedData carries no content and no detached content was given")
 	case attached:
-		if err := unmarshal(sd.Encap.Content.Bytes, &content); err != nil {
-			return nil, nil, fmt.Errorf("pki: eContent: %w", err)
+		if err := unmarshal(encap.Content.Bytes, &content); err != nil {
+			return nil, nil, nil, fmt.Errorf("pki: eContent: %w", err)
 		}
 	default:
 		content = detached
@@ -95,32 +143,34 @@ func VerifySignedData(der, detached []byte, certs []*x509.Certificate) (content 
 	for rest := sd.Certificates.Bytes; len(rest) > 0; {
 		var raw asn1.RawValue
 		if rest, err = asn1.Unmarshal(rest, &raw); err != nil {
-			return nil, nil, fmt.Errorf("pki: SignedData certificates: %w", err)
+			return nil, nil, nil, fmt.Errorf("pki: SignedData certificates: %w", err)
 		}
 		if raw.Class != asn1.ClassUniversal || raw.Tag != asn1.TagSequence {
 			continue // attribute and other certificate formats
 		}
 		c, err := x509.ParseCertificate(raw.FullBytes)
 		if err != nil {
-			return nil, nil, fmt.Errorf("pki: SignedData certificate: %w", err)
+			return nil, nil, nil, fmt.Errorf("pki: SignedData certificate: %w", err)
 		}
 		pool = append(pool, c)
 	}
 
 	if len(sd.SignerInfos) == 0 {
-		return nil, nil, errors.New("pki: SignedData has no signers")
+		return nil, nil, nil, errors.New("pki: SignedData has no signers")
 	}
+	signers := make([]Signer, 0, len(sd.SignerInfos))
 	for i, si := range sd.SignerInfos {
 		cert, err := findSigner(si.SID, pool)
 		if err != nil {
-			return nil, nil, fmt.Errorf("pki: signer %d: %w", i, err)
+			return nil, nil, nil, fmt.Errorf("pki: signer %d: %w", i, err)
 		}
-		if err := verifySignerInfo(si, sd.Encap.Type, content, cert); err != nil {
-			return nil, nil, fmt.Errorf("pki: signer %d (%s): %w", i, cert.Subject, err)
+		signer, err := verifySignerInfo(si, encap.Type, content, cert)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("pki: signer %d (%s): %w", i, cert.Subject, err)
 		}
-		signers = append(signers, cert)
+		signers = append(signers, signer)
 	}
-	return content, signers, nil
+	return encap.Type, content, signers, nil
 }
 
 // findSigner returns the certificate that sid names.
@@ -147,20 +197,21 @@ func findSigner(sid asn1.RawValue, pool []*x509.Certificate) (*x509.Certificate,
 }
 
 // verifySignerInfo checks one signer: the signed attributes against the
-// content, then the signature over the attributes, or over the content when
-// there are none.
-func verifySignerInfo(si signerInfo, contentType asn1.ObjectIdentifier, content []byte, cert *x509.Certificate) error {
+// content, the signature over the attributes, or over the content when there
+// are none, and the signature time-stamp when there is one.
+func verifySignerInfo(si signerInfo, contentType asn1.ObjectIdentifier, content []byte, cert *x509.Certificate) (Signer, error) {
+	signer := Signer{Certificate: cert}
 	key, err := ParsePublicKey(cert.RawSubjectPublicKeyInfo)
 	if err != nil {
-		return err
+		return signer, err
 	}
 	_, littleEndian, err := signatureScheme(si.SignatureAlgorithm.Algorithm)
 	if err != nil {
-		return err
+		return signer, err
 	}
 	h, err := newHash(si.DigestAlgorithm.Algorithm, key.DKE)
 	if err != nil {
-		return err
+		return signer, err
 	}
 
 	signed := content
@@ -168,8 +219,8 @@ func verifySignerInfo(si signerInfo, contentType asn1.ObjectIdentifier, content 
 		// the signature covers the attributes with their universal SET tag (RFC 5652, 5.4)
 		signed = append([]byte{0x31}, si.SignedAttrs.FullBytes[1:]...)
 		h.Write(content)
-		if err := checkSignedAttrs(signed, contentType, h.Sum(nil)); err != nil {
-			return err
+		if signer.SigningTime, err = checkSignedAttrs(signed, contentType, h.Sum(nil)); err != nil {
+			return signer, err
 		}
 		h.Reset()
 	}
@@ -178,51 +229,82 @@ func verifySignerInfo(si signerInfo, contentType asn1.ObjectIdentifier, content 
 
 	// IIT writes r||s itself; the Bouncy Castle JCA wraps it in a DER OCTET STRING
 	var inner []byte
-	if unmarshal(si.Signature, &inner) == nil {
-		if err := key.verify(digest, inner, littleEndian); err == nil {
-			return nil
+	if unmarshal(si.Signature, &inner) != nil || key.verify(digest, inner, littleEndian) != nil {
+		if err := key.verify(digest, si.Signature, littleEndian); err != nil {
+			return signer, err
 		}
 	}
-	return key.verify(digest, si.Signature, littleEndian)
+
+	attrs, err := parseAttributes(si.UnsignedAttrs)
+	if err != nil {
+		return signer, fmt.Errorf("unsigned attributes: %w", err)
+	}
+	if i := slices.IndexFunc(attrs, func(a attribute) bool { return a.Type.Equal(oidSignatureTimeStamp) }); i >= 0 {
+		var token asn1.RawValue // the first of the attribute's tokens
+		if _, err := asn1.Unmarshal(attrs[i].Values.Bytes, &token); err != nil {
+			return signer, fmt.Errorf("signature time-stamp: %w", err)
+		}
+		if signer.TimeStamp, err = VerifyTimeStamp(token.FullBytes, si.Signature); err != nil {
+			return signer, fmt.Errorf("signature time-stamp: %w", err)
+		}
+	}
+	return signer, nil
+}
+
+// parseAttributes reads a SET OF Attribute under any tag; an empty value has none.
+func parseAttributes(set asn1.RawValue) ([]attribute, error) {
+	if set.FullBytes == nil {
+		return nil, nil
+	}
+	var attrs []attribute
+	rest, err := asn1.UnmarshalWithParams(append([]byte{0x31}, set.FullBytes[1:]...), &attrs, "set")
+	if err != nil {
+		return nil, err
+	}
+	if len(rest) != 0 {
+		return nil, errors.New("trailing data")
+	}
+	return attrs, nil
 }
 
 // checkSignedAttrs checks that the signed attributes name the content type
-// and carry the message digest of the content, each exactly once.
-func checkSignedAttrs(set []byte, contentType asn1.ObjectIdentifier, digest []byte) error {
-	var attrs []attribute
-	rest, err := asn1.UnmarshalWithParams(set, &attrs, "set")
+// and carry the message digest of the content, each exactly once, and returns
+// the signing time when there is one.
+func checkSignedAttrs(set []byte, contentType asn1.ObjectIdentifier, digest []byte) (time.Time, error) {
+	attrs, err := parseAttributes(asn1.RawValue{FullBytes: set})
 	if err != nil {
-		return fmt.Errorf("signed attributes: %w", err)
+		return time.Time{}, fmt.Errorf("signed attributes: %w", err)
 	}
-	if len(rest) != 0 {
-		return errors.New("signed attributes: trailing data")
-	}
-	single := func(oid asn1.ObjectIdentifier, v any) error {
+	value := func(oid asn1.ObjectIdentifier, v any) (bool, error) {
 		i := slices.IndexFunc(attrs, func(a attribute) bool { return a.Type.Equal(oid) })
 		if i < 0 {
-			return fmt.Errorf("signed attribute %v is missing", oid)
+			return false, nil
 		}
 		if err := unmarshal(attrs[i].Values.Bytes, v); err != nil {
-			return fmt.Errorf("signed attribute %v: %w", oid, err)
+			return true, fmt.Errorf("signed attribute %v: %w", oid, err)
 		}
-		return nil
+		return true, nil
 	}
 
 	var ct asn1.ObjectIdentifier
-	if err := single(oidContentType, &ct); err != nil {
-		return err
+	if ok, err := value(oidContentType, &ct); err != nil || !ok {
+		return time.Time{}, errors.Join(err, errors.New("signed attribute contentType is missing"))
 	}
 	if !ct.Equal(contentType) {
-		return fmt.Errorf("signed content type %v, but the content is %v", ct, contentType)
+		return time.Time{}, fmt.Errorf("signed content type %v, but the content is %v", ct, contentType)
 	}
 	var md []byte
-	if err := single(oidMessageDigest, &md); err != nil {
-		return err
+	if ok, err := value(oidMessageDigest, &md); err != nil || !ok {
+		return time.Time{}, errors.Join(err, errors.New("signed attribute messageDigest is missing"))
 	}
 	if !bytes.Equal(md, digest) {
-		return fmt.Errorf("message digest: %w", ErrInvalidSignature)
+		return time.Time{}, fmt.Errorf("message digest: %w", ErrInvalidSignature)
 	}
-	return nil
+	var signingTime time.Time
+	if _, err := value(oidSigningTime, &signingTime); err != nil {
+		return time.Time{}, err
+	}
+	return signingTime, nil
 }
 
 // SignOptions select how SignData signs.
@@ -239,9 +321,15 @@ type SignOptions struct {
 // opts.GOST34311 is set; GOST 34.311 hashes the content and the attributes
 // with the DKE of cert. The signature value is r||s little-endian. random,
 // normally crypto/rand.Reader, provides the per-signature secret.
+// AddSignatureTimeStamp turns the result into CAdES-T.
 //
 // SignData fails if key does not belong to cert.
 func SignData(random io.Reader, content []byte, key *dstu4145.PrivateKey, cert *x509.Certificate, opts SignOptions) ([]byte, error) {
+	return signContent(random, oidData, content, key, cert, opts)
+}
+
+// signContent is SignData for any content type.
+func signContent(random io.Reader, contentType asn1.ObjectIdentifier, content []byte, key *dstu4145.PrivateKey, cert *x509.Certificate, opts SignOptions) ([]byte, error) {
 	pub, err := ParsePublicKey(cert.RawSubjectPublicKeyInfo)
 	if err != nil {
 		return nil, err
@@ -294,7 +382,7 @@ func SignData(random io.Reader, content []byte, key *dstu4145.PrivateKey, cert *
 		oid   asn1.ObjectIdentifier
 		value any
 	}{
-		{oidContentType, oidData},
+		{oidContentType, contentType},
 		{oidSigningTime, time.Now().UTC().Truncate(time.Second)},
 		{oidMessageDigest, contentDigest},
 		{oidSigningCertV2, signingCert},
@@ -325,40 +413,39 @@ func SignData(random io.Reader, content []byte, key *dstu4145.PrivateKey, cert *
 	if err != nil {
 		return nil, fmt.Errorf("pki: signer identifier: %w", err)
 	}
-	si := signerInfo{
-		Version:            1,
-		SID:                asn1.RawValue{FullBytes: sid},
-		DigestAlgorithm:    pkix.AlgorithmIdentifier{Algorithm: digestAlg},
-		SignedAttrs:        asn1.RawValue{FullBytes: append([]byte{0xa0}, signedAttrs[1:]...)}, // [0] IMPLICIT SET
-		SignatureAlgorithm: pkix.AlgorithmIdentifier{Algorithm: signatureAlg},
-		Signature:          dstu4145.MarshalSignature(key.Public().Curve(), r, sv),
-	}
 
 	encap := struct {
 		Type    asn1.ObjectIdentifier
 		Content []byte `asn1:"optional,explicit,tag:0"`
-	}{Type: oidData}
+	}{Type: contentType}
 	if !opts.Detached {
 		encap.Content = content
 	}
-	sd, err := asn1.Marshal(struct {
-		Version          int
-		DigestAlgorithms []pkix.AlgorithmIdentifier `asn1:"set"`
-		Encap            any
-		Certificates     asn1.RawValue
-		SignerInfos      []signerInfo `asn1:"set"`
-	}{
-		Version:          1,
-		DigestAlgorithms: []pkix.AlgorithmIdentifier{{Algorithm: digestAlg}},
-		Encap:            encap,
-		Certificates:     asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: 0, IsCompound: true, Bytes: cert.Raw},
-		SignerInfos:      []signerInfo{si},
-	})
+	rawEncap, err := asn1.Marshal(encap)
 	if err != nil {
-		return nil, fmt.Errorf("pki: SignedData: %w", err)
+		return nil, fmt.Errorf("pki: EncapsulatedContentInfo: %w", err)
 	}
-	return asn1.Marshal(struct {
-		Type    asn1.ObjectIdentifier
-		Content asn1.RawValue
-	}{oidSignedData, asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: 0, IsCompound: true, Bytes: sd}})
+	rawDigestAlgs, err := asn1.MarshalWithParams([]pkix.AlgorithmIdentifier{{Algorithm: digestAlg}}, "set")
+	if err != nil {
+		return nil, fmt.Errorf("pki: digest algorithms: %w", err)
+	}
+	version := 1
+	if !contentType.Equal(oidData) {
+		version = 3 // RFC 5652, 5.1
+	}
+	sd := signedData{
+		Version:          version,
+		DigestAlgorithms: asn1.RawValue{FullBytes: rawDigestAlgs},
+		Encap:            asn1.RawValue{FullBytes: rawEncap},
+		Certificates:     asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: 0, IsCompound: true, Bytes: cert.Raw},
+		SignerInfos: []signerInfo{{
+			Version:            1,
+			SID:                asn1.RawValue{FullBytes: sid},
+			DigestAlgorithm:    pkix.AlgorithmIdentifier{Algorithm: digestAlg},
+			SignedAttrs:        asn1.RawValue{FullBytes: append([]byte{0xa0}, signedAttrs[1:]...)}, // [0] IMPLICIT SET
+			SignatureAlgorithm: pkix.AlgorithmIdentifier{Algorithm: signatureAlg},
+			Signature:          dstu4145.MarshalSignature(key.Public().Curve(), r, sv),
+		}},
+	}
+	return sd.marshal()
 }

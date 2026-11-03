@@ -48,7 +48,7 @@ func TestVerifySignedDataTSA(t *testing.T) {
 			if !bytes.Contains(content, tt.digest) {
 				t.Errorf("VerifySignedData(%s) content %x lacks the requested digest %x", tt.file, content, tt.digest)
 			}
-			if len(signers) != 1 || signers[0].Subject.CommonName == "" {
+			if len(signers) != 1 || signers[0].Certificate.Subject.CommonName == "" {
 				t.Errorf("VerifySignedData(%s) signers = %v, want the TSA certificate", tt.file, signers)
 			}
 
@@ -99,7 +99,9 @@ func (s *testSigner) signLE(t *testing.T, data []byte) []byte {
 	return dstu4145.MarshalSignature(s.key.Public().Curve(), r, sv)
 }
 
-func newTestSigner(t *testing.T) *testSigner {
+// newTestSigner makes the key and certificate; eku, when given, becomes a
+// critical extended key usage extension.
+func newTestSigner(t *testing.T, eku ...asn1.ObjectIdentifier) *testSigner {
 	t.Helper()
 	c, err := dstu4145.NamedCurve(6)
 	if err != nil {
@@ -114,6 +116,10 @@ func newTestSigner(t *testing.T) *testSigner {
 	slices.Reverse(point)
 	name := mustMarshal(t, pkix.Name{CommonName: "uacrypto test"}.ToRDNSequence())
 	ski := mustMarshal(t, []byte("test key id"))
+	extensions := []pkix.Extension{{Id: asn1.ObjectIdentifier{2, 5, 29, 14}, Value: ski}}
+	if eku != nil {
+		extensions = append(extensions, pkix.Extension{Id: asn1.ObjectIdentifier{2, 5, 29, 37}, Critical: true, Value: mustMarshal(t, eku)})
+	}
 	tbs := mustMarshal(t, struct {
 		Version    int `asn1:"explicit,tag:0"`
 		Serial     *big.Int
@@ -129,7 +135,7 @@ func newTestSigner(t *testing.T) *testSigner {
 		Validity:   struct{ NotBefore, NotAfter time.Time }{time.Now().UTC().Truncate(time.Second), time.Now().UTC().Truncate(time.Second).Add(time.Hour)},
 		Subject:    asn1.RawValue{FullBytes: name},
 		SPKI:       asn1.RawValue{FullBytes: namedCurveSPKI(t, oidLE, 6, nil, point)},
-		Extensions: []pkix.Extension{{Id: asn1.ObjectIdentifier{2, 5, 29, 14}, Value: ski}},
+		Extensions: extensions,
 	})
 	sig := mustMarshal(t, s.signLE(t, tbs))
 	der := mustMarshal(t, struct {
@@ -266,7 +272,7 @@ func TestVerifySignedData(t *testing.T) {
 			if !bytes.Equal(got, content) {
 				t.Errorf("VerifySignedData(%+v) content = %q, want %q", o, got, content)
 			}
-			if len(signers) != 1 || !signers[0].Equal(s.cert) {
+			if len(signers) != 1 || !signers[0].Certificate.Equal(s.cert) {
 				t.Errorf("VerifySignedData(%+v) signers = %v, want the test certificate", o, signers)
 			}
 		})
@@ -386,7 +392,7 @@ func TestSignData(t *testing.T) {
 			if err != nil {
 				t.Fatalf("VerifySignedData(SignData(%+v)) error = %v", tt.opts, err)
 			}
-			if !bytes.Equal(got, content) || len(signers) != 1 || !signers[0].Equal(s.cert) {
+			if !bytes.Equal(got, content) || len(signers) != 1 || !signers[0].Certificate.Equal(s.cert) {
 				t.Errorf("VerifySignedData(SignData(%+v)) = %q, %v, want the content and the test certificate", tt.opts, got, signers)
 			}
 			if tt.opts.Detached && bytes.Contains(der, content) {

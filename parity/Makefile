@@ -1,5 +1,6 @@
 # Звірка uacrypto з Bouncy Castle (Java) і Rust-бібліотеками. Потрібні go, java/javac, cargo, curl.
 #   make          — уся звірка; ненульовий код виходу, якщо хоч щось розійшлося
+#   make tsa      — CAdES-T з позначками часу справжнього TSA (мережа; TSA_URL змінює сервер)
 #   make czo      — перевірити підписи всіх ДСТУ-сертифікатів пакета ЦЗО (окремо: пакет оновлюється)
 #   make clean    — прибрати згенероване
 
@@ -7,13 +8,14 @@ BC_VERSION := 1.86
 BC_JAR     := java/bcprov-jdk18on-$(BC_VERSION).jar
 BC_SHA256  := 2af190b300cbb0b35e248ccf5f4a06b6072030aeb3da7a98ec73abe5b4cb371f
 BC_URL     := https://repo1.maven.org/maven2/org/bouncycastle/bcprov-jdk18on/$(BC_VERSION)/bcprov-jdk18on-$(BC_VERSION).jar
+TSA_URL    ?= http://ca.diia.gov.ua/services/tsp/
 CZO_URL    := https://czo.gov.ua/download/certificates/CACertificates.p7b
 CZO_SHA256 := efc6a4ecf5ca10dd099335fbf2c1173d597110b4eb431cb89652e7b7369029c4
 OUT        := out
 JAVA       ?= java
 JAVAC      ?= javac
 
-.PHONY: all cms czo clean
+.PHONY: all cms tsa czo clean
 all: $(OUT)/cases.txt $(OUT)/bc_sigs.txt $(OUT)/rust_sigs.txt cms
 	cat $(OUT)/bc_sigs.txt $(OUT)/rust_sigs.txt > $(OUT)/foreign_sigs.txt
 	go run . verify $(OUT)/foreign_sigs.txt
@@ -41,6 +43,11 @@ $(OUT)/bc_sigs.txt: $(OUT)/cases.txt $(BC_JAR) java/Check.java
 
 $(OUT)/rust_sigs.txt: $(OUT)/cases.txt rust/src/main.rs rust/Cargo.toml rust/Cargo.lock
 	cargo run --release --locked -q --manifest-path rust/Cargo.toml -- $(OUT)/cases.txt $@
+
+tsa: cms $(OUT)/CACertificates.p7b
+	cargo run --release --locked -q --manifest-path rust/Cargo.toml -- cades-t $(TSA_URL) $(OUT)/rust_t.txt
+	go run . tsa $(TSA_URL) $(OUT)/rust_cms.txt $(OUT)/rust_t.txt $(OUT)/go_t.txt
+	cargo run --release --locked -q --manifest-path rust/Cargo.toml -- cms-verify $(OUT)/go_t.txt $(OUT)/CACertificates.p7b
 
 $(OUT)/CACertificates.p7b:
 	mkdir -p $(OUT)
