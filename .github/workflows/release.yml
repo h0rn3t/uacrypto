@@ -1,0 +1,67 @@
+# A pushed tag v* becomes a GitHub release once the module builds and its tests pass.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # gh release create
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # the previous tag and the commits since it
+          fetch-tags: true
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Test
+        run: |
+          go vet ./...
+          go test -race ./...
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG already exists"
+            exit 0
+          fi
+
+          # the tag annotation when it says more than the tag name, then the commits since the previous tag
+          {
+            message=$(git tag -l --format='%(contents)' "$TAG")
+            if [ -n "$message" ] && [ "$message" != "$TAG" ]; then
+              printf '%s\n\n' "$message"
+            fi
+            previous=$(git describe --tags --abbrev=0 "$TAG^" 2>/dev/null || true)
+            if [ -n "$previous" ]; then
+              echo "## Зміни від $previous"
+              echo
+              git log --no-merges --format='- %s (%h)' "$previous..$TAG"
+              echo
+              echo "**Повний список:** https://github.com/$GITHUB_REPOSITORY/compare/$previous...$TAG"
+            else
+              echo "## Зміни"
+              echo
+              git log --no-merges --format='- %s (%h)' "$TAG"
+            fi
+          } > notes.md
+
+          gh release create "$TAG" --title "$TAG" --verify-tag --notes-file notes.md
+
+      - name: Announce the version to the Go module proxy
+        env:
+          TAG: ${{ github.ref_name }}
+        # pkg.go.dev picks the version up from proxy.golang.org; a failure here does not undo the release
+        run: |
+          cd "$(mktemp -d)" # outside the module: go list refuses a version of the main module
+          GOPROXY=https://proxy.golang.org go list -m "github.com/${GITHUB_REPOSITORY}@${TAG}" || true
