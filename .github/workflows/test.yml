@@ -8,7 +8,6 @@ on:
 
 permissions:
   contents: read
-  id-token: write # Codecov takes the upload token from GitHub OIDC, no secret needed
 
 jobs:
   test:
@@ -33,6 +32,6 @@ jobs:
       - uses: codecov/codecov-action@v5
         with:
           files: coverage.out
-          use_oidc: true
-          # pull requests from forks get no OIDC token: only a push must upload
+          token: ${{ secrets.CODECOV_TOKEN }}
+          # pull requests from forks get no secrets: only a push must upload
           fail_ci_if_error: ${{ github.event_name == 'push' }}
