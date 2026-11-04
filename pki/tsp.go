@@ -128,30 +128,9 @@ func (c *TSAClient) timeStamp(ctx context.Context, alg asn1.ObjectIdentifier, da
 		return nil, nil, fmt.Errorf("pki: TimeStampReq: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.URL, bytes.NewReader(req))
+	body, err := post(ctx, c.HTTPClient, "TSA", c.URL, "application/timestamp-query", req)
 	if err != nil {
-		return nil, nil, fmt.Errorf("pki: TSA request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/timestamp-query")
-	client := c.HTTPClient
-	if client == nil {
-		client = &http.Client{Timeout: 30 * time.Second}
-	}
-	resp, err := client.Do(httpReq)
-	if err != nil {
-		return nil, nil, fmt.Errorf("pki: TSA: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, nil, fmt.Errorf("pki: TSA answered %s", resp.Status)
-	}
-	const maxResponse = 1 << 20
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponse+1))
-	if err != nil {
-		return nil, nil, fmt.Errorf("pki: TSA response: %w", err)
-	}
-	if len(body) > maxResponse {
-		return nil, nil, fmt.Errorf("pki: TSA response exceeds %d bytes", maxResponse)
+		return nil, nil, err
 	}
 
 	var tsResp struct {
@@ -180,6 +159,37 @@ func (c *TSAClient) timeStamp(ctx context.Context, alg asn1.ObjectIdentifier, da
 		return nil, nil, errors.New("pki: the time-stamp token does not carry the request nonce")
 	}
 	return token, ts, nil
+}
+
+// post sends body to the server at url, named server in errors, with client
+// or, when it is nil, a client with a 30-second timeout, and returns the
+// answer of at most 1 MiB.
+func post(ctx context.Context, client *http.Client, server, url, contentType string, body []byte) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("pki: %s request: %w", server, err)
+	}
+	req.Header.Set("Content-Type", contentType)
+	if client == nil {
+		client = &http.Client{Timeout: 30 * time.Second}
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("pki: %s: %w", server, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("pki: %s answered %s", server, resp.Status)
+	}
+	const maxResponse = 1 << 20
+	answer, err := io.ReadAll(io.LimitReader(resp.Body, maxResponse+1))
+	if err != nil {
+		return nil, fmt.Errorf("pki: %s response: %w", server, err)
+	}
+	if len(answer) > maxResponse {
+		return nil, fmt.Errorf("pki: %s response exceeds %d bytes", server, maxResponse)
+	}
+	return answer, nil
 }
 
 // AddSignatureTimeStamp turns a CAdES-BES SignedData into CAdES-T: it asks tsa

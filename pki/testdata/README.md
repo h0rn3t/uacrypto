@@ -27,3 +27,12 @@
 | `tsa-tax-gost.p7s` | http://ca.tax.gov.ua/services/tsp/ | ГОСТ 34.311, `dstu4145le` |
 | `tsa-privatbank-gost.p7s` | http://acsk.privatbank.ua/services/tsp/ | ГОСТ 34.311, `dstu4145le` |
 | `tsa-diia-kupyna.p7s` | http://ca.diia.gov.ua/services/tsp/ | Купина-256, ДСТУ 4145 + Купина-256 |
+
+Відповіді OCSP, отримані 2026-11-04 на запити з CertID на Купині-256 і nonce `uacrypto-test-nonce`;
+у файлі — увесь OCSPResponse:
+
+| Файл | Відповідач | Сертифікат (видавець, серійний номер) | Статус |
+|---|---|---|---|
+| `ocsp-czo-good.der` | http://czo.gov.ua/services/ocsp/ | `czo-2601.der`, `572B26CB…E7010000` («Вчасно», `vchasno-kupyna.der`) | good |
+| `ocsp-czo-revoked.der` | http://czo.gov.ua/services/ocsp/ | `czo-2020.der`, `05E19E2C…06010000` з CRL ЦЗО-2020 | revoked 2021-10-07 15:56:54 UTC, superseded |
+| `ocsp-monobank-good.der` | http://ca.monobank.ua/services/ocsp/dstu/ | `monobank-ca.der`, `107D4BC9…48F70463` (`monobank-cmp-kupyna512.der`) | good |

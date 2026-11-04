@@ -6,7 +6,8 @@
 // Certificate.RawSubjectPublicKeyInfo, and CheckCertificateSignature checks the
 // signature of a certificate parsed by crypto/x509, the way Bouncy Castle and
 // the IIT library do. VerifySignedData checks CMS SignedData: signed files
-// (.p7s) and time-stamp tokens.
+// (.p7s) and time-stamp tokens. OCSPClient and ParseOCSPResponse check the
+// revocation status of a certificate.
 //
 // Supported keys use the OID dstu4145le (1.2.804.2.1.1.1.1.3.1.1) or
 // dstu4145be (1.2.804.2.1.1.1.1.3.1.1.1.1) with one of the ten named curves,
