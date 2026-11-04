@@ -26,7 +26,7 @@ var (
 )
 
 func TestVerifyTimeStampTSA(t *testing.T) {
-	for _, file := range []string{"tsa-tax-gost.p7s", "tsa-privatbank-gost.p7s", "tsa-diia-kupyna.p7s"} {
+	for _, file := range []string{"tsa-tax-gost.p7s", "tsa-privatbank-gost.p7s", "tsa-diia-kupyna.p7s", "tsa-diia-kupyna-ber.p7s"} {
 		t.Run(file, func(t *testing.T) {
 			token, err := os.ReadFile(filepath.Join("testdata", file))
 			if err != nil {

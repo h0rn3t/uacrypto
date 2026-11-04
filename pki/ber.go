@@ -1,6 +1,7 @@
 package pki
 
 import (
+	"encoding/asn1"
 	"errors"
 	"slices"
 )
@@ -11,11 +12,12 @@ const maxBERDepth = 64
 
 var errBER = errors.New("pki: malformed BER")
 
-// toDER re-encodes the BER value b in DER, as Bouncy Castle reads requests:
-// indefinite lengths of constructed values and long or non-minimal length
-// forms become minimal definite lengths. Only lengths change: the order of a
-// SET OF and constructed strings stay as they are, and DER input comes back
-// byte for byte.
+// toDER re-encodes the BER value b in DER, as Bouncy Castle reads requests
+// and CMS: indefinite lengths of constructed values and long or non-minimal
+// length forms become minimal definite lengths, and a constructed OCTET
+// STRING, the chunked eContent of a streamed SignedData, becomes one
+// primitive OCTET STRING. The order of a SET OF and other constructed strings
+// stay as they are, and DER input comes back byte for byte.
 func toDER(b []byte) ([]byte, error) {
 	der, rest, err := berValue(b, 0)
 	if err != nil {
@@ -94,6 +96,20 @@ func berValue(b []byte, depth int) (der, rest []byte, err error) {
 			}
 			content = append(content, child...)
 		}
+	}
+	if b[0] == 0x24 { // constructed OCTET STRING: its chunks, already DER, join into one
+		var octets []byte
+		for chunks := content; len(chunks) > 0; {
+			var chunk asn1.RawValue
+			if chunks, err = asn1.Unmarshal(chunks, &chunk); err != nil {
+				return nil, nil, err
+			}
+			if chunk.Class != asn1.ClassUniversal || chunk.Tag != asn1.TagOctetString {
+				return nil, nil, errBER
+			}
+			octets = append(octets, chunk.Bytes...)
+		}
+		tag, content = []byte{asn1.TagOctetString}, octets
 	}
 	return slices.Concat(tag, derLength(len(content)), content), rest, nil
 }

@@ -77,7 +77,8 @@ func hashOf(alg asn1.ObjectIdentifier, data []byte) (otherHash, error) {
 //
 // Every signer must have a signature time-stamp and no validation data yet,
 // and every certificate must be good. With ocsp.URL empty, each certificate
-// is checked at the OCSP server it names.
+// is checked at the OCSP server it names. signed may be DER or BER; the
+// result is DER.
 func AddValidationData(ctx context.Context, signed []byte, certs []*x509.Certificate, ocsp *OCSPClient) ([]byte, error) {
 	sd, err := parseSignedData(signed)
 	if err != nil {

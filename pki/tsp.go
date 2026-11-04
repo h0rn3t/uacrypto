@@ -53,10 +53,10 @@ type tstInfo struct {
 	Extensions asn1.RawValue `asn1:"optional,tag:1"`
 }
 
-// VerifyTimeStamp verifies the RFC 3161 time-stamp token over data: the
-// DSTU 4145 signature of the token, a TSA certificate for time stamping, and
-// the message imprint, a Kupyna or GOST 34.311 (ДКЕ №1) hash of data. A
-// token over other data is ErrInvalidSignature.
+// VerifyTimeStamp verifies the RFC 3161 time-stamp token, DER or BER, over
+// data: the DSTU 4145 signature of the token, a TSA certificate for time
+// stamping, and the message imprint, a Kupyna or GOST 34.311 (ДКЕ №1) hash of
+// data. A token over other data is ErrInvalidSignature.
 func VerifyTimeStamp(token, data []byte) (*TimeStamp, error) {
 	ts, _, err := verifyTimeStamp(token, data, nil)
 	return ts, err
@@ -196,7 +196,8 @@ func post(ctx context.Context, client *http.Client, server, url, contentType str
 // AddSignatureTimeStamp turns a CAdES-BES SignedData into CAdES-T: it asks tsa
 // to stamp the signature value of every signer, hashed with the signer's
 // digest algorithm, and adds the token as the unsigned attribute
-// signatureTimeStampToken. tsa.GOST34311 is not used.
+// signatureTimeStampToken. tsa.GOST34311 is not used. signed may be DER or
+// BER; the result is DER.
 func AddSignatureTimeStamp(ctx context.Context, signed []byte, tsa *TSAClient) ([]byte, error) {
 	sd, err := parseSignedData(signed)
 	if err != nil {

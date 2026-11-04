@@ -2,6 +2,8 @@ package pki_test
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/h0rn3t/uacrypto/pki"
@@ -43,6 +45,11 @@ func TestToDER(t *testing.T) {
 		{"BER child of a DER parent", append([]byte{0x30, 0x82, 0x01, 0x34}, berSeq(long)...), append([]byte{0x30, 0x82, 0x01, 0x34}, longSeq...)},
 		{"multi-byte tag", []byte{0xbf, 0x81, 0x00, 0x80, 0x02, 0x01, 0x05, 0x00, 0x00}, []byte{0xbf, 0x81, 0x00, 0x03, 0x02, 0x01, 0x05}},
 		{"shallow nesting", nestedSeq(32), nil},
+		{"chunked OCTET STRING", []byte{0x24, 0x80, 0x04, 0x01, 'a', 0x04, 0x02, 'b', 'c', 0x00, 0x00}, []byte{0x04, 0x03, 'a', 'b', 'c'}},
+		{"definite chunked OCTET STRING", []byte{0x24, 0x06, 0x04, 0x01, 'a', 0x04, 0x01, 'b'}, []byte{0x04, 0x02, 'a', 'b'}},
+		{"nested chunks", []byte{0x24, 0x80, 0x24, 0x80, 0x04, 0x01, 'a', 0x00, 0x00, 0x04, 0x01, 'b', 0x00, 0x00}, []byte{0x04, 0x02, 'a', 'b'}},
+		{"no chunks", []byte{0x24, 0x80, 0x00, 0x00}, []byte{0x04, 0x00}},
+		{"chunked OCTET STRING in a SEQUENCE", berSeq([]byte{0x24, 0x80, 0x04, 0x01, 'a', 0x00, 0x00}, five), []byte{0x30, 0x06, 0x04, 0x01, 'a', 0x02, 0x01, 0x05}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -57,18 +64,34 @@ func TestToDER(t *testing.T) {
 	}
 
 	for name, in := range map[string][]byte{
-		"primitive indefinite":     {0x04, 0x80, 0x01, 0x00, 0x00},
-		"missing end-of-contents":  {0x30, 0x80, 0x02, 0x01, 0x05},
-		"length past the end":      {0x30, 0x05, 0x02, 0x01, 0x05},
-		"5-byte length":            {0x30, 0x85, 0, 0, 0, 0, 3, 0x02, 0x01, 0x05},
-		"trailing data":            {0x02, 0x01, 0x05, 0x00},
-		"end-of-contents in DER":   {0x30, 0x02, 0x00, 0x00},
-		"empty":                    nil,
-		"deeper than 64 levels":    nestedSeq(65),
-		"truncated multi-byte tag": {0xbf, 0x81},
+		"primitive indefinite":       {0x04, 0x80, 0x01, 0x00, 0x00},
+		"missing end-of-contents":    {0x30, 0x80, 0x02, 0x01, 0x05},
+		"length past the end":        {0x30, 0x05, 0x02, 0x01, 0x05},
+		"5-byte length":              {0x30, 0x85, 0, 0, 0, 0, 3, 0x02, 0x01, 0x05},
+		"trailing data":              {0x02, 0x01, 0x05, 0x00},
+		"end-of-contents in DER":     {0x30, 0x02, 0x00, 0x00},
+		"empty":                      nil,
+		"deeper than 64 levels":      nestedSeq(65),
+		"truncated multi-byte tag":   {0xbf, 0x81},
+		"INTEGER in an OCTET STRING": {0x24, 0x80, 0x02, 0x01, 0x05, 0x00, 0x00},
 	} {
 		if got, err := pki.ToDER(in); err == nil {
 			t.Errorf("toDER(%s %x) = %x, want error", name, in, got)
+		}
+	}
+
+	// Bouncy Castle re-encoded these DER signatures in BER: back in DER they are the originals
+	for _, file := range []string{"czo-test-xlong-full-gost", "tsa-diia-kupyna"} {
+		der, err := os.ReadFile(filepath.Join("testdata", file+".p7s"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		ber, err := os.ReadFile(filepath.Join("testdata", file+"-ber.p7s"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, err := pki.ToDER(ber); err != nil || !bytes.Equal(got, der) {
+			t.Errorf("toDER(%s-ber.p7s) = %d bytes, %v; want the %d bytes of %s.p7s", file, len(got), err, len(der), file)
 		}
 	}
 }

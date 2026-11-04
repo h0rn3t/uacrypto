@@ -17,5 +17,5 @@ func SignContent(random io.Reader, contentType asn1.ObjectIdentifier, content []
 	return sd.marshal()
 }
 
-// ToDER lets tests reach the BER normalization of the request parsers.
+// ToDER lets tests reach the BER normalization of the parsers.
 var ToDER = toDER

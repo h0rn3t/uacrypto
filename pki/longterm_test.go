@@ -186,6 +186,12 @@ func TestVerifySignedDataCZO(t *testing.T) {
 			wantChain: []string{"ТЕСТ Тестовий Тест Тестович", "Адміністратор ІТС ЦЗО (CA TEST)", "Центральний засвідчувальний орган (ROOT TEST)"},
 			wantOCSP:  []string{"OCSP-сервер Адміністратора ІТС ЦЗО (CA TEST)", "OCSP-сервер Центрального засвідчувального органу (ROOT TEST)"},
 		},
+		{
+			// the same signature in BER: indefinite lengths, the content in 4-byte chunks
+			file:      "czo-test-xlong-full-gost-ber.p7s",
+			wantChain: []string{"ТЕСТ Тестовий Тест Тестович", "Адміністратор ІТС ЦЗО (CA TEST)", "Центральний засвідчувальний орган (ROOT TEST)"},
+			wantOCSP:  []string{"OCSP-сервер Адміністратора ІТС ЦЗО (CA TEST)", "OCSP-сервер Центрального засвідчувального органу (ROOT TEST)"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.file, func(t *testing.T) {

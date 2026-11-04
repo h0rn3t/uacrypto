@@ -334,10 +334,6 @@ func MarshalCertificateBundle(certs []*x509.Certificate) ([]byte, error) {
 // DER or BER: a .p7b bundle such as CACertificates.p7b of the ЦЗО and of IIT,
 // or a signed .p7s. Certificates in other formats are skipped.
 func ParseCertificateBundle(der []byte) ([]*x509.Certificate, error) {
-	der, err := toDER(der)
-	if err != nil {
-		return nil, err
-	}
 	sd, err := parseSignedData(der)
 	if err != nil {
 		return nil, err

@@ -27,6 +27,13 @@
 | `tsa-tax-gost.p7s` | http://ca.tax.gov.ua/services/tsp/ | ГОСТ 34.311, `dstu4145le` |
 | `tsa-privatbank-gost.p7s` | http://acsk.privatbank.ua/services/tsp/ | ГОСТ 34.311, `dstu4145le` |
 | `tsa-diia-kupyna.p7s` | http://ca.diia.gov.ua/services/tsp/ | Купина-256, ДСТУ 4145 + Купина-256 |
+| `tsa-diia-kupyna-ber.p7s` | `tsa-diia-kupyna.p7s` у BER (див. нижче) | Купина-256, ДСТУ 4145 + Купина-256 |
+
+Файли `*-ber.p7s` зроблено 2026-11-04 класами ASN.1 Bouncy Castle 1.86 (`BERSequence`, `BERTaggedObject`,
+`BERSet`, `BEROctetString`) з DER-файлів поруч, як їх пишуть потокові засоби: ContentInfo, SignedData,
+EncapsulatedContentInfo і набір сертифікатів мають невизначену довжину, eContent — складений OCTET STRING
+шматками по 4 байти (`czo-test-…`) і по 40 байтів (`tsa-diia-…`). SignerInfo, а з ним підписані атрибути,
+значення підпису й вкладені позначки часу й відповіді OCSP, лишилися байт у байт такими, як були.
 
 Тестові приклади кваліфікованого підпису ЦЗО ([czo.gov.ua/testexamples](https://czo.gov.ua/testexamples),
 наказ Мінцифри № Н 191), завантажені 2026-11-04 без змін: файл «Test\r\n», підписаний разом із даними
@@ -41,6 +48,7 @@
 | `czo-test-xlong-gost.p7s` | CAdES-X Long (повні дані для перевірки) | ГОСТ 34.311, ДСТУ 4145 |
 | `czo-test-xlong-full-kupyna.p7s` | CAdES-X Long (повні дані ЦСК для перевірки) | Купина-256, ДСТУ 4145 |
 | `czo-test-xlong-full-gost.p7s` | CAdES-X Long (повні дані ЦСК для перевірки) | ГОСТ 34.311, ДСТУ 4145 |
+| `czo-test-xlong-full-gost-ber.p7s` | `czo-test-xlong-full-gost.p7s` у BER (див. нижче) | ГОСТ 34.311, ДСТУ 4145 |
 | `czo-test-tsa.der` | сертифікат «TSP-сервер Адміністратора ІТС ЦЗО (CA TEST)» | — |
 | `czo-test-ocsp-ca.der` | сертифікат «OCSP-сервер Адміністратора ІТС ЦЗО (CA TEST)» | — |
 | `czo-test-ocsp-root.der` | сертифікат «OCSP-сервер Центрального засвідчувального органу (ROOT TEST)» | — |

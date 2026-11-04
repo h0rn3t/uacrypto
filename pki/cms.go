@@ -71,8 +71,12 @@ type signedData struct {
 	SignerInfos      []signerInfo  `asn1:"set"`
 }
 
-// parseSignedData reads a ContentInfo holding a SignedData.
+// parseSignedData reads a ContentInfo holding a SignedData in DER or BER.
 func parseSignedData(der []byte) (*signedData, error) {
+	der, err := toDER(der)
+	if err != nil {
+		return nil, err
+	}
 	// encoding/asn1 keeps the [0] EXPLICIT wrapper in a RawValue: Bytes is the inner value
 	var ci struct {
 		ContentType asn1.ObjectIdentifier
@@ -103,9 +107,10 @@ func (sd *signedData) marshal() ([]byte, error) {
 	}{oidSignedData, asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: 0, IsCompound: true, Bytes: inner}})
 }
 
-// VerifySignedData verifies a DER CMS SignedData (RFC 5652) whose signers use
-// DSTU 4145, as IIT-compatible software, Ukrainian TSAs and Bouncy Castle
-// write it. Every SignerInfo must verify, and so must the signature
+// VerifySignedData verifies a CMS SignedData (RFC 5652) in DER or BER whose
+// signers use DSTU 4145, as IIT-compatible software, Ukrainian TSAs and
+// Bouncy Castle write it; BER comes from streaming signers, with indefinite
+// lengths and the content in chunks. Every SignerInfo must verify, and so must the signature
 // time-stamp of a CAdES-T signer and the validation data of a CAdES-X Long
 // one. When the SignedData carries no content, detached is the signed
 // content; otherwise detached must be nil. The signer, TSA and OCSP responder
