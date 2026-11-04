@@ -113,6 +113,12 @@ func TestParseOCSPRequest(t *testing.T) {
 		if len(req.Extensions) != 1 || !req.Extensions[0].Id.Equal(oidOCSPNonce) {
 			t.Errorf("ParseOCSPRequest(%s) extensions = %+v, want the nonce", name, req.Extensions)
 		}
+		if want := "\x04\x05nonce"; string(req.Nonce) != want { // the extension value: an OCTET STRING
+			t.Errorf("ParseOCSPRequest(%s) nonce = %x, want %x", name, req.Nonce, want)
+		}
+	}
+	if req, err := pki.ParseOCSPRequest(ocspRequest(t, oidKupyna256, []byte{1}, []byte{2}, big.NewInt(77), nil)); err != nil || req.Nonce != nil {
+		t.Errorf("ParseOCSPRequest(no nonce) nonce = %x, %v, want nil", req.Nonce, err)
 	}
 
 	// version, requestorName and a signature, which a responder may ignore;
@@ -169,7 +175,7 @@ func (o *ocspResponder) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now()
-	tmpl := &pki.OCSPResponseTemplate{ProducedAt: now, Extensions: req.Extensions}
+	tmpl := &pki.OCSPResponseTemplate{ProducedAt: now, Nonce: req.Nonce}
 	for _, id := range req.CertIDs {
 		single := pki.OCSPSingleResponse{CertID: id, Status: pki.OCSPUnknown, ThisUpdate: now, NextUpdate: now.Add(time.Hour)}
 		if ok, err := id.IssuedBy(o.ca); err == nil && ok {
@@ -228,5 +234,12 @@ func TestCreateOCSPResponse(t *testing.T) {
 	tmpl := &pki.OCSPResponseTemplate{ProducedAt: time.Now()}
 	if _, err := pki.CreateOCSPResponse(rand.Reader, tmpl, ca, newKey(t)); err == nil {
 		t.Error("CreateOCSPResponse(key of another certificate) error = nil, want error")
+	}
+
+	// a nonce in Extensions too would be written twice
+	nonce := mustMarshal(t, []byte("nonce"))
+	twice := &pki.OCSPResponseTemplate{ProducedAt: time.Now(), Nonce: nonce, Extensions: []pkix.Extension{{Id: oidOCSPNonce, Value: nonce}}}
+	if _, err := pki.CreateOCSPResponse(rand.Reader, twice, ca, caKey); err == nil {
+		t.Error("CreateOCSPResponse(nonce in Nonce and Extensions) error = nil, want error")
 	}
 }

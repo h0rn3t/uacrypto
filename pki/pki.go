@@ -5,7 +5,8 @@
 // signatures unknown. ParsePublicKey reads the key from
 // Certificate.RawSubjectPublicKeyInfo, and CheckCertificateSignature checks the
 // signature of a certificate parsed by crypto/x509, the way Bouncy Castle and
-// the IIT library do. VerifySignedData checks CMS SignedData: signed files
+// the IIT library do; ParseSubjectAttributes reads the subject's РНОКПП and
+// ЄДРПОУ codes. VerifySignedData checks CMS SignedData: signed files
 // (.p7s) and time-stamp tokens. OCSPClient and ParseOCSPResponse check the
 // revocation status of a certificate, and AddValidationData stores the
 // statuses in a signature as CAdES-X Long.
@@ -13,7 +14,8 @@
 // For a CA, CreateCertificate issues certificates from crypto/x509
 // templates, ParseCertificateRequest checks PKCS#10 requests,
 // CreateOCSPResponse and CreateTimeStampResponse answer what
-// ParseOCSPRequest and ParseTimeStampRequest read, and the PKCS#8 and .p7b
+// ParseOCSPRequest and ParseTimeStampRequest read, MarshalSubjectAttributes
+// writes the subject's codes, and the PKCS#8 and .p7b
 // functions store keys and certificate bundles as Bouncy Castle and the ЦЗО
 // do.
 //

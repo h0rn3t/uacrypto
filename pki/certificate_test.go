@@ -8,6 +8,8 @@ import (
 	"encoding/asn1"
 	"encoding/hex"
 	"math/big"
+	"os"
+	"path/filepath"
 	"slices"
 	"testing"
 	"time"
@@ -344,4 +346,90 @@ func mustHex(t *testing.T, s string) []byte {
 		t.Fatal(err)
 	}
 	return b
+}
+
+// The subjectDirectoryAttributes of the ЦЗО test signer and of a CA server
+// certificate from CACertificates.p7b, as their CAs wrote them.
+func TestSubjectAttributes(t *testing.T) {
+	p7s, err := os.ReadFile(filepath.Join("testdata", "czo-test-t-kupyna.p7s"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	certs, err := pki.ParseCertificateBundle(p7s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	i := slices.IndexFunc(certs, func(c *x509.Certificate) bool {
+		return c.Subject.CommonName == "ТЕСТ Тестовий Тест Тестович"
+	})
+	if i < 0 {
+		t.Fatal("czo-test-t-kupyna.p7s has no signer certificate")
+	}
+	tests := []struct {
+		name string
+		cert *x509.Certificate
+		want pki.SubjectAttributes
+	}{
+		{"ЦЗО test signer", certs[i], pki.SubjectAttributes{DRFO: "0000000000"}},
+		{"ukrgasbank-tsp.der", readCert(t, "ukrgasbank-tsp.der"), pki.SubjectAttributes{EDRPOU: "23697280"}},
+		{"czo-2601.der, no extension", readCert(t, "czo-2601.der"), pki.SubjectAttributes{}},
+	}
+	for _, tt := range tests {
+		got, err := pki.ParseSubjectAttributes(tt.cert)
+		if err != nil || got != tt.want {
+			t.Errorf("ParseSubjectAttributes(%s) = %+v, %v, want %+v", tt.name, got, err, tt.want)
+		}
+		if tt.want == (pki.SubjectAttributes{}) {
+			continue
+		}
+		ext, err := pki.MarshalSubjectAttributes(tt.want)
+		j := slices.IndexFunc(tt.cert.Extensions, func(e pkix.Extension) bool { return e.Id.Equal(oidSubjectDirectory) })
+		if err != nil || !ext.Id.Equal(oidSubjectDirectory) || ext.Critical || !bytes.Equal(ext.Value, tt.cert.Extensions[j].Value) {
+			t.Errorf("MarshalSubjectAttributes(%+v) = %+v, %v, want the extension of %s %x", tt.want, ext, err, tt.name, tt.cert.Extensions[j].Value)
+		}
+	}
+
+	// both codes, DRFO first, as test-ca writes them for a user
+	both := pki.SubjectAttributes{DRFO: "1234567890", EDRPOU: "12345678"}
+	want, _ := hex.DecodeString("303a" +
+		"301c060c2a8624020101010b01040101310c130a" + hex.EncodeToString([]byte("1234567890")) +
+		"301a060c2a8624020101010b01040201310a1308" + hex.EncodeToString([]byte("12345678")))
+	ext, err := pki.MarshalSubjectAttributes(both)
+	if err != nil || !bytes.Equal(ext.Value, want) {
+		t.Errorf("MarshalSubjectAttributes(%+v) = %x, %v, want %x", both, ext.Value, err, want)
+	}
+	if got, err := pki.ParseSubjectAttributes(&x509.Certificate{Extensions: []pkix.Extension{ext}}); err != nil || got != both {
+		t.Errorf("ParseSubjectAttributes(MarshalSubjectAttributes(%+v)) = %+v, %v", both, got, err)
+	}
+
+	// other attributes, such as dateOfBirth (RFC 3739), are skipped
+	dateOfBirth := mustHex(t, "301f301d06082b060105050709013111180f"+hex.EncodeToString([]byte("19900102000000Z")))
+	if got, err := pki.ParseSubjectAttributes(withSubjectDirectory(dateOfBirth)); err != nil || got != (pki.SubjectAttributes{}) {
+		t.Errorf("ParseSubjectAttributes(dateOfBirth only) = %+v, %v, want none", got, err)
+	}
+
+	for name, value := range map[string][]byte{
+		"not a SEQUENCE":     {0x02, 0x01, 0x05},
+		"DRFO as INTEGER":    mustHex(t, "30153013060c2a8624020101010b010401013103020105"),
+		"trailing data":      append(slices.Clone(want), 0x00),
+		"DRFO with no value": mustHex(t, "30123010060c2a8624020101010b010401013100"),
+	} {
+		if got, err := pki.ParseSubjectAttributes(withSubjectDirectory(value)); err == nil {
+			t.Errorf("ParseSubjectAttributes(%s) = %+v, want error", name, got)
+		}
+	}
+	for name, a := range map[string]pki.SubjectAttributes{
+		"none":                            {},
+		"Cyrillic, not a PrintableString": {DRFO: "ІПН1234567"},
+	} {
+		if ext, err := pki.MarshalSubjectAttributes(a); err == nil {
+			t.Errorf("MarshalSubjectAttributes(%s) = %+v, want error", name, ext)
+		}
+	}
+}
+
+var oidSubjectDirectory = asn1.ObjectIdentifier{2, 5, 29, 9}
+
+func withSubjectDirectory(value []byte) *x509.Certificate {
+	return &x509.Certificate{Extensions: []pkix.Extension{{Id: oidSubjectDirectory, Value: value}}}
 }

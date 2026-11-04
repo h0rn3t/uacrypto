@@ -20,7 +20,7 @@
 | [`gost34311`](https://pkg.go.dev/github.com/h0rn3t/uacrypto/gost34311) | ГОСТ 34.311-95 — функція гешування | `hash.Hash`, ДКЕ №1 за замовчуванням або власний S-блок |
 | [`kupyna`](https://pkg.go.dev/github.com/h0rn3t/uacrypto/kupyna) | ДСТУ 7564:2014 «Купина» — функція гешування | `hash.Hash` на 256, 384 і 512 біт |
 | [`kalyna`](https://pkg.go.dev/github.com/h0rn3t/uacrypto/kalyna) | ДСТУ 7624:2014 «Калина» — блоковий шифр | `cipher.Block` з блоком 128, 256 і 512 біт і всіма ключами стандарту |
-| [`pki`](https://pkg.go.dev/github.com/h0rn3t/uacrypto/pki) | X.509 і CMS з ДСТУ 4145 | ключ ДСТУ 4145 із сертифіката (явні параметри чи OID кривої, ДКЕ, le/be), перевірка підпису сертифіката (ГОСТ 34.311, Купина-256, Купина-512), створення й перевірка CMS SignedData: файлів `.p7s` (CAdES-BES, CAdES-T і CAdES-X Long) і позначок часу RFC 3161, клієнт TSP, клієнт OCSP і перевірка відповідей OCSP; для ЦСК — випуск сертифікатів, PKCS#10, ключі PKCS#8 у форматі BC, відповіді OCSP і позначки часу, пакети `.p7b` |
+| [`pki`](https://pkg.go.dev/github.com/h0rn3t/uacrypto/pki) | X.509 і CMS з ДСТУ 4145 | ключ ДСТУ 4145 із сертифіката (явні параметри чи OID кривої, ДКЕ, le/be), РНОКПП і ЄДРПОУ власника, перевірка підпису сертифіката (ГОСТ 34.311, Купина-256, Купина-512), створення й перевірка CMS SignedData: файлів `.p7s` (CAdES-BES, CAdES-T і CAdES-X Long) і позначок часу RFC 3161, клієнт TSP, клієнт OCSP і перевірка відповідей OCSP; для ЦСК — випуск сертифікатів, PKCS#10, ключі PKCS#8 у форматі BC, відповіді OCSP і позначки часу, пакети `.p7b` |
 | [`gost28147`](https://pkg.go.dev/github.com/h0rn3t/uacrypto/gost28147) | ГОСТ 28147-89 — блоковий шифр | `cipher.Block`, ДКЕ №1, розпакування й пакування ДКЕ параметрів ключа |
 
 ## Встановлення
@@ -98,7 +98,12 @@ issuer, err := x509.ParseCertificate(issuerDER)
 err = pki.CheckCertificateSignature(cert, issuer) // nil, pki.ErrInvalidSignature або x509.ErrUnsupportedAlgorithm
 
 key, err := pki.ParsePublicKey(cert.RawSubjectPublicKeyInfo) // *dstu4145.PublicKey і ДКЕ з параметрів
+
+codes, err := pki.ParseSubjectAttributes(cert) // codes.DRFO — РНОКПП, codes.EDRPOU — ЄДРПОУ
 ```
+
+РНОКПП і код ЄДРПОУ українські ЦСК пишуть у розширенні `subjectDirectoryAttributes`
+(OID `1.2.804.2.1.1.1.11.1.4.1.1` і `…4.2.1`); порожнє поле означає, що коду в сертифікаті немає.
 
 Перевіряється лише підпис. Строк дії, призначення ключа й імена перевіряйте засобами `crypto/x509`.
 
@@ -216,12 +221,15 @@ pkcs8, _ := pki.MarshalPKCS8PrivateKey(key) // як пише BC; pki.ParsePKCS8P
 // заявка PKCS#10 (DER або BER): ключ іншого алгоритму розбирається з PublicKey == nil
 req, _ := pki.ParseCertificateRequest(p10)
 err := req.CheckSignature() // володіння ключем; pki.ErrInvalidSignature або x509.ErrUnsupportedAlgorithm
+codes, _ := pki.MarshalSubjectAttributes(pki.SubjectAttributes{DRFO: "1234567890", EDRPOU: "12345678"})
+userTmpl.ExtraExtensions = append(userTmpl.ExtraExtensions, codes) // як ЦСК пишуть РНОКПП і ЄДРПОУ
 userDER, _ := pki.CreateCertificate(rand.Reader, userTmpl, root, req.RawSubjectPublicKeyInfo, key)
 
 // OCSP-відповідач
 ocspReq, _ := pki.ParseOCSPRequest(body)
 issued, _ := ocspReq.CertIDs[0].IssuedBy(root) // ГОСТ 34.311, Купина, SHA-1/2/3, MD5
-resp, _ := pki.CreateOCSPResponse(rand.Reader, &pki.OCSPResponseTemplate{...}, responder, responderKey)
+tmpl := &pki.OCSPResponseTemplate{ProducedAt: now, Nonce: ocspReq.Nonce, Responses: ...} // nonce — назад без змін
+resp, _ := pki.CreateOCSPResponse(rand.Reader, tmpl, responder, responderKey)
 
 // TSA: політика, nonce, розширення й certReq — із запиту; невідомий геш — відмова badAlg
 tsReq, _ := pki.ParseTimeStampRequest(body)

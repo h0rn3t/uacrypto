@@ -20,6 +20,10 @@ import (
 var (
 	oidExtKeyUsage    = asn1.ObjectIdentifier{2, 5, 29, 37}
 	oidKPTimeStamping = asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 3, 8}
+
+	oidSubjectDirectoryAttributes = asn1.ObjectIdentifier{2, 5, 29, 9}
+	oidDRFO                       = asn1.ObjectIdentifier{1, 2, 804, 2, 1, 1, 1, 11, 1, 4, 1, 1}
+	oidEDRPOU                     = asn1.ObjectIdentifier{1, 2, 804, 2, 1, 1, 1, 11, 1, 4, 2, 1}
 )
 
 // MarshalPublicKey returns the DER SubjectPublicKeyInfo of k in the form of
@@ -339,4 +343,71 @@ func ParseCertificateBundle(der []byte) ([]*x509.Certificate, error) {
 		return nil, err
 	}
 	return sd.certificates()
+}
+
+// SubjectAttributes are the registration codes of a certificate subject that
+// Ukrainian CAs write in the subjectDirectoryAttributes extension
+// (RFC 5280, 4.2.1.8), each as a PrintableString. An empty code is absent.
+type SubjectAttributes struct {
+	DRFO   string // РНОКПП, the taxpayer number of a person in the ДРФО register
+	EDRPOU string // the ЄДРПОУ code of a legal entity
+}
+
+// ParseSubjectAttributes returns the DRFO and EDRPOU codes in the
+// subjectDirectoryAttributes extension of cert, the zero value when it has
+// none. Other attributes are skipped; of several values the first is taken.
+func ParseSubjectAttributes(cert *x509.Certificate) (SubjectAttributes, error) {
+	var a SubjectAttributes
+	i := slices.IndexFunc(cert.Extensions, func(e pkix.Extension) bool { return e.Id.Equal(oidSubjectDirectoryAttributes) })
+	if i < 0 {
+		return a, nil
+	}
+	var attrs []attribute
+	if err := unmarshal(cert.Extensions[i].Value, &attrs); err != nil {
+		return a, fmt.Errorf("pki: subjectDirectoryAttributes: %w", err)
+	}
+	for _, attr := range attrs {
+		var code *string
+		switch {
+		case attr.Type.Equal(oidDRFO):
+			code = &a.DRFO
+		case attr.Type.Equal(oidEDRPOU):
+			code = &a.EDRPOU
+		default:
+			continue
+		}
+		if _, err := asn1.Unmarshal(attr.Values.Bytes, code); err != nil {
+			return SubjectAttributes{}, fmt.Errorf("pki: subject attribute %v: %w", attr.Type, err)
+		}
+	}
+	return a, nil
+}
+
+// MarshalSubjectAttributes returns the non-critical subjectDirectoryAttributes
+// extension with the codes of a, DRFO first, as Ukrainian CAs write it, for
+// x509.Certificate.ExtraExtensions. A code must be a valid PrintableString,
+// and at least one must be set.
+func MarshalSubjectAttributes(a SubjectAttributes) (pkix.Extension, error) {
+	var attrs []attribute
+	for _, code := range []struct {
+		oid   asn1.ObjectIdentifier
+		value string
+	}{{oidDRFO, a.DRFO}, {oidEDRPOU, a.EDRPOU}} {
+		if code.value == "" {
+			continue
+		}
+		v, err := asn1.MarshalWithParams(code.value, "printable")
+		if err != nil {
+			return pkix.Extension{}, fmt.Errorf("pki: subject attribute %v: %w", code.oid, err)
+		}
+		attrs = append(attrs, attribute{Type: code.oid, Values: asn1.RawValue{Class: asn1.ClassUniversal, Tag: asn1.TagSet, IsCompound: true, Bytes: v}})
+	}
+	if len(attrs) == 0 {
+		return pkix.Extension{}, errors.New("pki: no subject attributes")
+	}
+	value, err := asn1.Marshal(attrs)
+	if err != nil {
+		return pkix.Extension{}, fmt.Errorf("pki: subjectDirectoryAttributes: %w", err)
+	}
+	return pkix.Extension{Id: oidSubjectDirectoryAttributes, Value: value}, nil
 }

@@ -18,6 +18,7 @@
 | `dksu-ocsp-be.der` | OCSP-сервер АЦСК ДКСУ, ключ з OID `dstu4145be` | `dksu-ca.der` |
 | `monobank-ca.der` | КНЕДП monobank \| Universal Bank | — |
 | `monobank-cmp-kupyna512.der` | CMP-сервер КНЕДП monobank, підпис ДСТУ 4145 + Купина-512 | `monobank-ca.der` |
+| `ukrgasbank-tsp.der` | TSP-сервер КНЕДП АБ «УКРГАЗБАНК», серійний номер `2D8136B9…58000000`; ЄДРПОУ `23697280` у `subjectDirectoryAttributes` | ЗЦ НБУ, UA-00032106-2019 |
 
 Позначки часу (RFC 3161), отримані 2026-11-04 від публічних TSA на запит із гешем рядка
 `uacrypto test`; у файлі — сам токен, CMS SignedData з TSTInfo:

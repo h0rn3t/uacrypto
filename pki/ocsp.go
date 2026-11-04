@@ -20,6 +20,8 @@ var (
 	oidOCSPNonce = asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 48, 1, 2}
 )
 
+func isOCSPNonce(e pkix.Extension) bool { return e.Id.Equal(oidOCSPNonce) }
+
 // errNoStatus reports an OCSP response about other certificates.
 var errNoStatus = errors.New("pki: the OCSP response has no status for the certificate")
 
@@ -210,7 +212,7 @@ func parseOCSPResponse(der []byte, serial *big.Int, issuer *x509.Certificate, ce
 		return nil, nil, fmt.Errorf("pki: OCSP certificate status with tag %d", s.Tag)
 	}
 	var nonce []byte
-	if i := slices.IndexFunc(data.Extensions, func(e pkix.Extension) bool { return e.Id.Equal(oidOCSPNonce) }); i >= 0 {
+	if i := slices.IndexFunc(data.Extensions, isOCSPNonce); i >= 0 {
 		nonce = data.Extensions[i].Value
 	}
 	return resp, nonce, nil

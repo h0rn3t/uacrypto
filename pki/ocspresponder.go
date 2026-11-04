@@ -14,6 +14,7 @@ import (
 	"hash"
 	"io"
 	"math/big"
+	"slices"
 	"time"
 
 	"github.com/h0rn3t/uacrypto/dstu4145"
@@ -72,6 +73,11 @@ func (id *OCSPCertID) IssuedBy(issuer *x509.Certificate) (bool, error) {
 type OCSPRequest struct {
 	CertIDs    []OCSPCertID
 	Extensions []pkix.Extension // requestExtensions, the nonce among them
+
+	// Nonce is the value of the nonce extension (RFC 8954) as the request
+	// carried it, nil when there is none. A responder echoes it in
+	// OCSPResponseTemplate.Nonce, so that the client sees a fresh response.
+	Nonce []byte
 }
 
 // ParseOCSPRequest parses an OCSP request in DER or BER. The request
@@ -100,6 +106,9 @@ func ParseOCSPRequest(der []byte) (*OCSPRequest, error) {
 		return nil, errors.New("pki: the OCSP request names no certificate")
 	}
 	r := &OCSPRequest{Extensions: req.TBS.Extensions}
+	if i := slices.IndexFunc(r.Extensions, isOCSPNonce); i >= 0 {
+		r.Nonce = r.Extensions[i].Value
+	}
 	for _, single := range req.TBS.Requests {
 		var id certID
 		if err := unmarshal(single.CertID.FullBytes, &id); err != nil {
@@ -136,7 +145,11 @@ type OCSPSingleResponse struct {
 type OCSPResponseTemplate struct {
 	ProducedAt time.Time
 	Responses  []OCSPSingleResponse
-	Extensions []pkix.Extension // responseExtensions, such as the nonce of the request
+	Extensions []pkix.Extension // responseExtensions besides the nonce
+
+	// Nonce, normally OCSPRequest.Nonce, is written byte for byte as the
+	// value of the nonce extension, the first of the response; nil writes none.
+	Nonce []byte
 }
 
 // CreateOCSPResponse returns a successful DER OCSP response (RFC 6960) with
@@ -151,6 +164,13 @@ func CreateOCSPResponse(random io.Reader, template *OCSPResponseTemplate, respon
 	}
 	if !responderKey.belongsTo(key) {
 		return nil, errors.New("pki: the private key does not belong to the OCSP responder")
+	}
+	extensions := template.Extensions
+	if template.Nonce != nil {
+		if slices.ContainsFunc(extensions, isOCSPNonce) {
+			return nil, errors.New("pki: the OCSP nonce is both in Nonce and in Extensions")
+		}
+		extensions = slices.Concat([]pkix.Extension{{Id: oidOCSPNonce, Value: template.Nonce}}, extensions)
 	}
 
 	type singleResponse struct {
@@ -207,7 +227,7 @@ func CreateOCSPResponse(random io.Reader, template *OCSPResponseTemplate, respon
 		asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: 1, IsCompound: true, Bytes: responder.RawSubject}, // byName
 		template.ProducedAt.UTC(),
 		singles,
-		template.Extensions,
+		extensions,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("pki: ResponseData: %w", err)
