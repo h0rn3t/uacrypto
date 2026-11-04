@@ -1,0 +1,2 @@
+ignore:
+  - "parity" # the cross-check tool, not library code

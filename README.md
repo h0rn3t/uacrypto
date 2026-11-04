@@ -1,6 +1,8 @@
 # uacrypto
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/h0rn3t/uacrypto.svg)](https://pkg.go.dev/github.com/h0rn3t/uacrypto)
+[![test](https://github.com/h0rn3t/uacrypto/actions/workflows/test.yml/badge.svg)](https://github.com/h0rn3t/uacrypto/actions/workflows/test.yml)
+[![codecov](https://codecov.io/gh/h0rn3t/uacrypto/graph/badge.svg)](https://app.codecov.io/gh/h0rn3t/uacrypto)
 ![Go](https://img.shields.io/badge/go-1.27-00ADD8)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
@@ -309,6 +311,18 @@ h, err := gost34311.NewWithSbox(sbox)
 - реальні відповіді OCSP ЦЗО (good і revoked, делегований відповідач за іменем, дві різні криві) і monobank (відповідач за KeyHash, Купина-512);
 - контрольні приклади Купини-256 з ДСТУ 7564:2014 і Калини-128/128 з ДСТУ 7624:2014;
 - фаз-тест розбору відкритого ключа.
+
+**Покриття тестами** рахує CI на кожен пуш у `main` і кожен pull request, звіт —
+на [Codecov](https://app.codecov.io/gh/h0rn3t/uacrypto). Утиліта звірки `parity/` не враховується.
+На 2026-11-04 (v0.0.6) покрито 88,6 % інструкцій:
+
+| Пакет | Покриття |
+|---|--:|
+| `kalyna`, `kupyna`, `internal/spn` | 100 % |
+| `gost34311` | 98,9 % |
+| `gost28147` | 95,0 % |
+| `dstu4145` | 93,7 % |
+| `pki` | 84,5 % |
 
 **Звірка з іншими реалізаціями** ([`parity/`](parity), `cd parity && make`). Одні й ті самі
 відтворювані випадкові дані рахують uacrypto та незалежні бібліотеки. Даних такий обсяг:

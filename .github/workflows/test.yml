@@ -1,0 +1,34 @@
+# Vet and race tests on every push to main and every pull request; the coverage goes to Codecov.
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+  id-token: write # Codecov takes the upload token from GitHub OIDC, no secret needed
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Test
+        run: |
+          go vet ./...
+          # -coverpkg counts internal/spn, which kalyna and kupyna test
+          go test -race -coverpkg=./... -coverprofile=coverage.out ./...
+
+      - uses: codecov/codecov-action@v5
+        with:
+          files: coverage.out
+          use_oidc: true
+          # pull requests from forks get no OIDC token: only a push must upload
+          fail_ci_if_error: ${{ github.event_name == 'push' }}

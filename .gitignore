@@ -1,3 +1,4 @@
+coverage.out
 parity/out/
 parity/rust/target/
 parity/java/*.jar
