@@ -47,6 +47,9 @@ type OCSPResponse struct {
 
 	Certificate *x509.Certificate // of the responder
 	Raw         []byte            // the DER OCSPResponse
+
+	basic       []byte // the DER BasicOCSPResponse inside Raw
+	responderID []byte // the DER ResponderID
 }
 
 type certID struct {
@@ -177,6 +180,8 @@ func parseOCSPResponse(der []byte, serial *big.Int, issuer *x509.Certificate) (*
 			NextUpdate:   r.NextUpdate,
 			Certificate:  responder,
 			Raw:          der,
+			basic:        outer.Bytes.Response,
+			responderID:  data.ResponderID.FullBytes,
 		}
 		switch s := r.Status; {
 		case s.Class == asn1.ClassContextSpecific && s.Tag == 0:

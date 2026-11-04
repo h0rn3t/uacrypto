@@ -215,11 +215,9 @@ func AddSignatureTimeStamp(ctx context.Context, signed []byte, tsa *TSAClient) (
 			Type:   oidSignatureTimeStamp,
 			Values: asn1.RawValue{Class: asn1.ClassUniversal, Tag: asn1.TagSet, IsCompound: true, Bytes: token},
 		})
-		set, err := asn1.MarshalWithParams(attrs, "set")
-		if err != nil {
-			return nil, fmt.Errorf("pki: unsigned attributes: %w", err)
+		if err := si.setUnsignedAttrs(attrs); err != nil {
+			return nil, err
 		}
-		si.UnsignedAttrs = asn1.RawValue{FullBytes: append([]byte{0xa1}, set[1:]...)} // [1] IMPLICIT SET
 	}
 	return sd.marshal()
 }

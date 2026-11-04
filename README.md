@@ -20,7 +20,7 @@
 | [`gost34311`](https://pkg.go.dev/github.com/h0rn3t/uacrypto/gost34311) | ГОСТ 34.311-95 — функція гешування | `hash.Hash`, ДКЕ №1 за замовчуванням або власний S-блок |
 | [`kupyna`](https://pkg.go.dev/github.com/h0rn3t/uacrypto/kupyna) | ДСТУ 7564:2014 «Купина» — функція гешування | `hash.Hash` на 256, 384 і 512 біт |
 | [`kalyna`](https://pkg.go.dev/github.com/h0rn3t/uacrypto/kalyna) | ДСТУ 7624:2014 «Калина» — блоковий шифр | `cipher.Block` з блоком 128, 256 і 512 біт і всіма ключами стандарту |
-| [`pki`](https://pkg.go.dev/github.com/h0rn3t/uacrypto/pki) | X.509 і CMS з ДСТУ 4145 | ключ ДСТУ 4145 із сертифіката (явні параметри чи OID кривої, ДКЕ, le/be), перевірка підпису сертифіката (ГОСТ 34.311, Купина-256, Купина-512), створення й перевірка CMS SignedData: файлів `.p7s` (CAdES-BES і CAdES-T) і позначок часу RFC 3161, клієнт TSP, клієнт OCSP і перевірка відповідей OCSP |
+| [`pki`](https://pkg.go.dev/github.com/h0rn3t/uacrypto/pki) | X.509 і CMS з ДСТУ 4145 | ключ ДСТУ 4145 із сертифіката (явні параметри чи OID кривої, ДКЕ, le/be), перевірка підпису сертифіката (ГОСТ 34.311, Купина-256, Купина-512), створення й перевірка CMS SignedData: файлів `.p7s` (CAdES-BES, CAdES-T і CAdES-X Long) і позначок часу RFC 3161, клієнт TSP, клієнт OCSP і перевірка відповідей OCSP |
 | [`gost28147`](https://pkg.go.dev/github.com/h0rn3t/uacrypto/gost28147) | ГОСТ 28147-89 — блоковий шифр | `cipher.Block`, ДКЕ №1 і розпакування ДКЕ з параметрів ключа |
 
 ## Встановлення
@@ -125,7 +125,6 @@ p7s, err := pki.SignData(rand.Reader, document, key, cert, pki.SignOptions{Detac
 Підпис має ту форму, яку пишуть українські кваліфіковані засоби: атрибути `contentType`,
 `signingTime`, `messageDigest`, `signingCertificateV2`, геш Купина-256 (або ГОСТ 34.311 з
 `GOST34311: true`), підписувач — за видавцем і серійним номером, значення підпису `r‖s` little-endian.
-Даних для довготривалої перевірки (CAdES-LT) поки немає.
 
 ### Позначка часу (TSP, CAdES-T)
 
@@ -141,6 +140,24 @@ fmt.Println(ts.Time, ts.Certificate.Subject.CommonName)
 Клієнт надсилає запит із nonce і геш Купина-256 (або ГОСТ 34.311 з `GOST34311: true`) і приймає
 лише токен, який перевіряється: підпис ДСТУ 4145, сертифікат TSA з призначенням timeStamping,
 геш даних і повернений nonce. Для CAdES-T геш береться той самий, що й у підписувача.
+
+### Дані для довготривалої перевірки (CAdES-X Long)
+
+```go
+// cadesT — результат AddSignatureTimeStamp; caCerts — сертифікати ЦСК і кореневий сертифікат ЦЗО
+long, err := pki.AddValidationData(ctx, cadesT, caCerts, &pki.OCSPClient{})
+
+_, signers, err := pki.VerifySignedData(long, nil, nil)
+// signers[i].Chain — шлях від підписувача до кореня, signers[i].OCSP[j] — перевірена відповідь про Chain[j]
+```
+
+Для кожного підписувача будується шлях до самопідписаного кореня з сертифікатів підпису й `caCerts`,
+про кожен сертифікат шляху, крім кореня, питають OCSP-сервер, названий у ньому, і додаються
+непідписані атрибути `completeCertificateRefs`, `completeRevocationRefs`, `certValues` і
+`revocationValues` (RFC 5126) — так, як пишуть українські кваліфіковані засоби й `ua-cryptography-pki`.
+Посилання гешуються алгоритмом підписувача. Потрібен CAdES-T; відкликаний чи невідомий сертифікат —
+помилка. `VerifySignedData` звіряє посилання зі значеннями, будує шлях і перевіряє відповіді OCSP, а
+статуси й час відповідей лишає на ваш розсуд; довіру до кореня перевіряйте окремо.
 
 ### Статус сертифіката (OCSP)
 
@@ -278,7 +295,8 @@ h, err := gost34311.NewWithSbox(sbox)
 - [x] Створення підписів CMS (CAdES-BES)
 - [x] TSP: клієнт, перевірка позначок часу, CAdES-T
 - [x] OCSP: клієнт і перевірка відповідей
-- [ ] CAdES-LT (дані для довготривалої перевірки); PKCS#10; випуск сертифікатів; CMS у BER
+- [x] CAdES-X Long (дані для довготривалої перевірки)
+- [ ] PKCS#10; випуск сертифікатів; CMS у BER
 - [x] Кодування підпису `r || s` як частина API
 - [x] ДСТУ 7624:2014 «Калина» (блоковий шифр)
 - [ ] Режими «Калини» з ДСТУ 7624: CMAC, GCM, CCM, XTS, обгортання ключів

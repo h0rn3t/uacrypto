@@ -34,6 +34,13 @@ type Signer struct {
 	// TimeStamp is the verified signatureTimeStampToken of a CAdES-T
 	// signature, nil when the signature has none.
 	TimeStamp *TimeStamp
+	// Chain and OCSP are the validation data of a CAdES-X Long signature,
+	// nil when the signature has none: the path from Certificate to a
+	// self-signed root, and for every certificate in it but the root the
+	// verified OCSP response about it, OCSP[i] about Chain[i]. The statuses
+	// and times of the responses are for the caller to judge.
+	Chain []*x509.Certificate
+	OCSP  []*OCSPResponse
 }
 
 type attribute struct {
@@ -139,21 +146,11 @@ func verifySignedData(der, detached []byte, certs []*x509.Certificate) (asn1.Obj
 		content = detached
 	}
 
-	pool := slices.Clone(certs)
-	for rest := sd.Certificates.Bytes; len(rest) > 0; {
-		var raw asn1.RawValue
-		if rest, err = asn1.Unmarshal(rest, &raw); err != nil {
-			return nil, nil, nil, fmt.Errorf("pki: SignedData certificates: %w", err)
-		}
-		if raw.Class != asn1.ClassUniversal || raw.Tag != asn1.TagSequence {
-			continue // attribute and other certificate formats
-		}
-		c, err := x509.ParseCertificate(raw.FullBytes)
-		if err != nil {
-			return nil, nil, nil, fmt.Errorf("pki: SignedData certificate: %w", err)
-		}
-		pool = append(pool, c)
+	pool, err := sd.certificates()
+	if err != nil {
+		return nil, nil, nil, err
 	}
+	pool = append(pool, certs...)
 
 	if len(sd.SignerInfos) == 0 {
 		return nil, nil, nil, errors.New("pki: SignedData has no signers")
@@ -164,13 +161,34 @@ func verifySignedData(der, detached []byte, certs []*x509.Certificate) (asn1.Obj
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("pki: signer %d: %w", i, err)
 		}
-		signer, err := verifySignerInfo(si, encap.Type, content, cert)
+		signer, err := verifySignerInfo(si, encap.Type, content, cert, pool)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("pki: signer %d (%s): %w", i, cert.Subject, err)
 		}
 		signers = append(signers, signer)
 	}
 	return encap.Type, content, signers, nil
+}
+
+// certificates returns the X.509 certificates of sd.
+func (sd *signedData) certificates() ([]*x509.Certificate, error) {
+	var certs []*x509.Certificate
+	for rest := sd.Certificates.Bytes; len(rest) > 0; {
+		var raw asn1.RawValue
+		var err error
+		if rest, err = asn1.Unmarshal(rest, &raw); err != nil {
+			return nil, fmt.Errorf("pki: SignedData certificates: %w", err)
+		}
+		if raw.Class != asn1.ClassUniversal || raw.Tag != asn1.TagSequence {
+			continue // attribute and other certificate formats
+		}
+		c, err := x509.ParseCertificate(raw.FullBytes)
+		if err != nil {
+			return nil, fmt.Errorf("pki: SignedData certificate: %w", err)
+		}
+		certs = append(certs, c)
+	}
+	return certs, nil
 }
 
 // findSigner returns the certificate that sid names.
@@ -198,8 +216,9 @@ func findSigner(sid asn1.RawValue, pool []*x509.Certificate) (*x509.Certificate,
 
 // verifySignerInfo checks one signer: the signed attributes against the
 // content, the signature over the attributes, or over the content when there
-// are none, and the signature time-stamp when there is one.
-func verifySignerInfo(si signerInfo, contentType asn1.ObjectIdentifier, content []byte, cert *x509.Certificate) (Signer, error) {
+// are none, the signature time-stamp and the CAdES-X Long validation data
+// when there are, with the issuers taken from pool.
+func verifySignerInfo(si signerInfo, contentType asn1.ObjectIdentifier, content []byte, cert *x509.Certificate, pool []*x509.Certificate) (Signer, error) {
 	signer := Signer{Certificate: cert}
 	key, err := ParsePublicKey(cert.RawSubjectPublicKeyInfo)
 	if err != nil {
@@ -248,7 +267,20 @@ func verifySignerInfo(si signerInfo, contentType asn1.ObjectIdentifier, content 
 			return signer, fmt.Errorf("signature time-stamp: %w", err)
 		}
 	}
+	if signer.Chain, signer.OCSP, err = verifyValidationData(attrs, cert, pool); err != nil {
+		return signer, fmt.Errorf("validation data: %w", err)
+	}
 	return signer, nil
+}
+
+// setUnsignedAttrs replaces the unsigned attributes of si with attrs.
+func (si *signerInfo) setUnsignedAttrs(attrs []attribute) error {
+	set, err := asn1.MarshalWithParams(attrs, "set")
+	if err != nil {
+		return fmt.Errorf("pki: unsigned attributes: %w", err)
+	}
+	si.UnsignedAttrs = asn1.RawValue{FullBytes: append([]byte{0xa1}, set[1:]...)} // [1] IMPLICIT SET
+	return nil
 }
 
 // parseAttributes reads a SET OF Attribute under any tag; an empty value has none.

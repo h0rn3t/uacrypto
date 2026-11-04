@@ -99,9 +99,17 @@ func (s *testSigner) signLE(t *testing.T, data []byte) []byte {
 	return dstu4145.MarshalSignature(s.key.Public().Curve(), r, sv)
 }
 
-// newTestSigner makes the key and certificate; eku, when given, becomes a
-// critical extended key usage extension.
+// newTestSigner makes the key and a self-signed certificate; eku, when given,
+// becomes a critical extended key usage extension.
 func newTestSigner(t *testing.T, eku ...asn1.ObjectIdentifier) *testSigner {
+	t.Helper()
+	return issueTestSigner(t, nil, "uacrypto test", "", eku...)
+}
+
+// issueTestSigner makes the key and a certificate named name, issued by ca or,
+// when ca is nil, self-signed; ocspURL, when given, becomes the OCSP server of
+// the authority information access extension.
+func issueTestSigner(t *testing.T, ca *testSigner, name, ocspURL string, eku ...asn1.ObjectIdentifier) *testSigner {
 	t.Helper()
 	c, err := dstu4145.NamedCurve(6)
 	if err != nil {
@@ -114,11 +122,28 @@ func newTestSigner(t *testing.T, eku ...asn1.ObjectIdentifier) *testSigner {
 	s := &testSigner{key: key}
 	point := key.Public().Bytes()
 	slices.Reverse(point)
-	name := mustMarshal(t, pkix.Name{CommonName: "uacrypto test"}.ToRDNSequence())
+	subject := mustMarshal(t, pkix.Name{CommonName: name}.ToRDNSequence())
+	issuer := subject
+	if ca == nil {
+		ca = s
+	} else {
+		issuer = ca.cert.RawSubject
+	}
 	ski := mustMarshal(t, []byte("test key id"))
 	extensions := []pkix.Extension{{Id: asn1.ObjectIdentifier{2, 5, 29, 14}, Value: ski}}
 	if eku != nil {
 		extensions = append(extensions, pkix.Extension{Id: asn1.ObjectIdentifier{2, 5, 29, 37}, Critical: true, Value: mustMarshal(t, eku)})
+	}
+	if ocspURL != "" {
+		type accessDescription struct {
+			Method   asn1.ObjectIdentifier
+			Location asn1.RawValue
+		}
+		aia := mustMarshal(t, []accessDescription{{
+			Method:   asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 48, 1},
+			Location: asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: 6, Bytes: []byte(ocspURL)}, // uniformResourceIdentifier
+		}})
+		extensions = append(extensions, pkix.Extension{Id: asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 1, 1}, Value: aia})
 	}
 	tbs := mustMarshal(t, struct {
 		Version    int `asn1:"explicit,tag:0"`
@@ -131,13 +156,13 @@ func newTestSigner(t *testing.T, eku ...asn1.ObjectIdentifier) *testSigner {
 		Extensions []pkix.Extension `asn1:"explicit,tag:3"`
 	}{
 		Version: 2, Serial: big.NewInt(7), Algorithm: pkix.AlgorithmIdentifier{Algorithm: oidLE},
-		Issuer:     asn1.RawValue{FullBytes: name},
+		Issuer:     asn1.RawValue{FullBytes: issuer},
 		Validity:   struct{ NotBefore, NotAfter time.Time }{time.Now().UTC().Truncate(time.Second), time.Now().UTC().Truncate(time.Second).Add(time.Hour)},
-		Subject:    asn1.RawValue{FullBytes: name},
+		Subject:    asn1.RawValue{FullBytes: subject},
 		SPKI:       asn1.RawValue{FullBytes: namedCurveSPKI(t, oidLE, 6, nil, point)},
 		Extensions: extensions,
 	})
-	sig := mustMarshal(t, s.signLE(t, tbs))
+	sig := mustMarshal(t, ca.signLE(t, tbs))
 	der := mustMarshal(t, struct {
 		TBS       asn1.RawValue
 		Algorithm pkix.AlgorithmIdentifier
@@ -146,7 +171,7 @@ func newTestSigner(t *testing.T, eku ...asn1.ObjectIdentifier) *testSigner {
 	if s.cert, err = x509.ParseCertificate(der); err != nil {
 		t.Fatalf("x509.ParseCertificate(test certificate) error = %v", err)
 	}
-	if err := pki.CheckCertificateSignature(s.cert, s.cert); err != nil {
+	if err := pki.CheckCertificateSignature(s.cert, ca.cert); err != nil {
 		t.Fatalf("CheckCertificateSignature(test certificate) = %v", err)
 	}
 	return s
