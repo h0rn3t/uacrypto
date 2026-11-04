@@ -28,6 +28,23 @@
 | `tsa-privatbank-gost.p7s` | http://acsk.privatbank.ua/services/tsp/ | ГОСТ 34.311, `dstu4145le` |
 | `tsa-diia-kupyna.p7s` | http://ca.diia.gov.ua/services/tsp/ | Купина-256, ДСТУ 4145 + Купина-256 |
 
+Тестові приклади кваліфікованого підпису ЦЗО ([czo.gov.ua/testexamples](https://czo.gov.ua/testexamples),
+наказ Мінцифри № Н 191), завантажені 2026-11-04 без змін: файл «Test\r\n», підписаний разом із даними
+(enveloped) на тестовому ЦСК «Адміністратор ІТС ЦЗО (CA TEST)». Сертифікати TSA й OCSP-серверів
+тестового ЦСК узято з файлів «з повними даними ЦСК»: у звичайних CAdES-T і CAdES-X Long їх немає.
+
+| Файл | Категорія ЦЗО | Геш і підпис |
+|---|---|---|
+| `czo-test-t-kupyna.p7s` | CAdES-T | Купина-256, ДСТУ 4145 |
+| `czo-test-c-gost.p7s` | CAdES-C | ГОСТ 34.311, ДСТУ 4145 |
+| `czo-test-xlong-kupyna.p7s` | CAdES-X Long (повні дані для перевірки) | Купина-256, ДСТУ 4145 |
+| `czo-test-xlong-gost.p7s` | CAdES-X Long (повні дані для перевірки) | ГОСТ 34.311, ДСТУ 4145 |
+| `czo-test-xlong-full-kupyna.p7s` | CAdES-X Long (повні дані ЦСК для перевірки) | Купина-256, ДСТУ 4145 |
+| `czo-test-xlong-full-gost.p7s` | CAdES-X Long (повні дані ЦСК для перевірки) | ГОСТ 34.311, ДСТУ 4145 |
+| `czo-test-tsa.der` | сертифікат «TSP-сервер Адміністратора ІТС ЦЗО (CA TEST)» | — |
+| `czo-test-ocsp-ca.der` | сертифікат «OCSP-сервер Адміністратора ІТС ЦЗО (CA TEST)» | — |
+| `czo-test-ocsp-root.der` | сертифікат «OCSP-сервер Центрального засвідчувального органу (ROOT TEST)» | — |
+
 Відповіді OCSP, отримані 2026-11-04 на запити з CertID на Купині-256 і nonce `uacrypto-test-nonce`;
 у файлі — увесь OCSPResponse:
 

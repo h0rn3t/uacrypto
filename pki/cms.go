@@ -37,8 +37,10 @@ type Signer struct {
 	// Chain and OCSP are the validation data of a CAdES-X Long signature,
 	// nil when the signature has none: the path from Certificate to a
 	// self-signed root, and for every certificate in it but the root the
-	// verified OCSP response about it, OCSP[i] about Chain[i]. The statuses
-	// and times of the responses are for the caller to judge.
+	// verified OCSP response about it, OCSP[i] about Chain[i], nil when the
+	// signature holds none. IIT stores the response about the signer
+	// certificate only, or with "full CA data" about the CAs too. The
+	// statuses and times of the responses are for the caller to judge.
 	Chain []*x509.Certificate
 	OCSP  []*OCSPResponse
 }
@@ -104,9 +106,13 @@ func (sd *signedData) marshal() ([]byte, error) {
 // VerifySignedData verifies a DER CMS SignedData (RFC 5652) whose signers use
 // DSTU 4145, as IIT-compatible software, Ukrainian TSAs and Bouncy Castle
 // write it. Every SignerInfo must verify, and so must the signature
-// time-stamp of a CAdES-T signer. When the SignedData carries no content,
-// detached is the signed content; otherwise detached must be nil. The signer
-// certificates are looked up in the SignedData and then in certs.
+// time-stamp of a CAdES-T signer and the validation data of a CAdES-X Long
+// one. When the SignedData carries no content, detached is the signed
+// content; otherwise detached must be nil. The signer, TSA and OCSP responder
+// certificates are looked up in the SignedData, the time-stamp token or OCSP
+// response, the certValues attribute, and then in certs: IIT leaves the TSA
+// and responder certificates out, so pass the CA certificates
+// (CACertificates.p7b of the ЦЗО) to verify its CAdES-T and CAdES-X Long.
 //
 // VerifySignedData returns the content and the signers in SignerInfo order. It
 // checks signatures only: the signer certificates are not checked against any
@@ -258,16 +264,23 @@ func verifySignerInfo(si signerInfo, contentType asn1.ObjectIdentifier, content 
 	if err != nil {
 		return signer, fmt.Errorf("unsigned attributes: %w", err)
 	}
+	long, err := parseLongTermData(attrs)
+	if err != nil {
+		return signer, fmt.Errorf("validation data: %w", err)
+	}
+	// IIT leaves the TSA and OCSP responder certificates out of CAdES-X Long
+	// for the verifier's CA certificate bundle
+	pool = append(slices.Clone(pool), long.certs...)
 	if i := slices.IndexFunc(attrs, func(a attribute) bool { return a.Type.Equal(oidSignatureTimeStamp) }); i >= 0 {
 		var token asn1.RawValue // the first of the attribute's tokens
 		if _, err := asn1.Unmarshal(attrs[i].Values.Bytes, &token); err != nil {
 			return signer, fmt.Errorf("signature time-stamp: %w", err)
 		}
-		if signer.TimeStamp, err = VerifyTimeStamp(token.FullBytes, si.Signature); err != nil {
+		if signer.TimeStamp, _, err = verifyTimeStamp(token.FullBytes, si.Signature, pool); err != nil {
 			return signer, fmt.Errorf("signature time-stamp: %w", err)
 		}
 	}
-	if signer.Chain, signer.OCSP, err = verifyValidationData(attrs, cert, pool); err != nil {
+	if signer.Chain, signer.OCSP, err = long.verify(cert, pool); err != nil {
 		return signer, fmt.Errorf("validation data: %w", err)
 	}
 	return signer, nil
@@ -339,6 +352,19 @@ func checkSignedAttrs(set []byte, contentType asn1.ObjectIdentifier, digest []by
 	return signingTime, nil
 }
 
+// issuerSerial is the IssuerSerial of RFC 5035 that names a certificate.
+type issuerSerial struct {
+	Issuer []asn1.RawValue // GeneralNames with one directoryName
+	Serial *big.Int
+}
+
+func newIssuerSerial(cert *x509.Certificate) issuerSerial {
+	return issuerSerial{
+		Issuer: []asn1.RawValue{{Class: asn1.ClassContextSpecific, Tag: 4, IsCompound: true, Bytes: cert.RawIssuer}},
+		Serial: cert.SerialNumber,
+	}
+}
+
 // SignOptions select how SignData signs.
 type SignOptions struct {
 	Detached  bool // leave the content out of the SignedData, as in a .p7s next to the file
@@ -391,22 +417,15 @@ func signContent(random io.Reader, contentType asn1.ObjectIdentifier, content []
 	if err != nil {
 		return nil, err
 	}
-	type issuerSerial struct {
-		Issuer []asn1.RawValue // GeneralNames with one directoryName
-		Serial *big.Int
-	}
 	type essCertIDv2 struct {
 		Hash         pkix.AlgorithmIdentifier
 		CertHash     []byte
 		IssuerSerial issuerSerial
 	}
 	signingCert := struct{ Certs []essCertIDv2 }{[]essCertIDv2{{
-		Hash:     pkix.AlgorithmIdentifier{Algorithm: digestAlg},
-		CertHash: certHash,
-		IssuerSerial: issuerSerial{
-			Issuer: []asn1.RawValue{{Class: asn1.ClassContextSpecific, Tag: 4, IsCompound: true, Bytes: cert.RawIssuer}},
-			Serial: cert.SerialNumber,
-		},
+		Hash:         pkix.AlgorithmIdentifier{Algorithm: digestAlg},
+		CertHash:     certHash,
+		IssuerSerial: newIssuerSerial(cert),
 	}}}
 
 	var attrs []attribute

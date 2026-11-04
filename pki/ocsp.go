@@ -22,6 +22,9 @@ var (
 	oidOCSPNonce = asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 48, 1, 2}
 )
 
+// errNoStatus reports an OCSP response about other certificates.
+var errNoStatus = errors.New("pki: the OCSP response has no status for the certificate")
+
 // An OCSPStatus is the status of a certificate in an OCSP response.
 type OCSPStatus int
 
@@ -50,6 +53,14 @@ type OCSPResponse struct {
 
 	basic       []byte // the DER BasicOCSPResponse inside Raw
 	responderID []byte // the DER ResponderID
+}
+
+type singleResponse struct {
+	CertID     certID
+	Status     asn1.RawValue
+	ThisUpdate time.Time        `asn1:"generalized"`
+	NextUpdate time.Time        `asn1:"optional,explicit,generalized,tag:0"`
+	Extensions []pkix.Extension `asn1:"optional,explicit,tag:1"`
 }
 
 type certID struct {
@@ -96,13 +107,14 @@ func newCertID(alg asn1.ObjectIdentifier, serial *big.Int, issuer *x509.Certific
 // ThisUpdate and NextUpdate with the time that matters to you. A signature
 // that does not verify is ErrInvalidSignature.
 func ParseOCSPResponse(der []byte, serial *big.Int, issuer *x509.Certificate) (*OCSPResponse, error) {
-	resp, _, err := parseOCSPResponse(der, serial, issuer)
+	resp, _, err := parseOCSPResponse(der, serial, issuer, nil)
 	return resp, err
 }
 
-// parseOCSPResponse is ParseOCSPResponse that also returns the value of the
-// nonce extension, nil when there is none.
-func parseOCSPResponse(der []byte, serial *big.Int, issuer *x509.Certificate) (*OCSPResponse, []byte, error) {
+// parseOCSPResponse is ParseOCSPResponse that also looks the responder up in
+// certs and returns the value of the nonce extension, nil when there is
+// none. A response about other certificates is errNoStatus.
+func parseOCSPResponse(der []byte, serial *big.Int, issuer *x509.Certificate, certs []*x509.Certificate) (*OCSPResponse, []byte, error) {
 	var outer struct {
 		Status asn1.Enumerated
 		Bytes  struct {
@@ -132,18 +144,22 @@ func parseOCSPResponse(der []byte, serial *big.Int, issuer *x509.Certificate) (*
 		Version     int `asn1:"optional,explicit,default:0,tag:0"`
 		ResponderID asn1.RawValue
 		ProducedAt  time.Time `asn1:"generalized"`
-		Responses   []struct {
-			CertID     certID
-			Status     asn1.RawValue
-			ThisUpdate time.Time        `asn1:"generalized"`
-			NextUpdate time.Time        `asn1:"optional,explicit,generalized,tag:0"`
-			Extensions []pkix.Extension `asn1:"optional,explicit,tag:1"`
-		}
-		Extensions []pkix.Extension `asn1:"optional,explicit,tag:1"`
+		Responses   []singleResponse
+		Extensions  []pkix.Extension `asn1:"optional,explicit,tag:1"`
 	}
 	if err := unmarshal(basic.TBS.FullBytes, &data); err != nil {
 		return nil, nil, fmt.Errorf("pki: OCSP ResponseData: %w", err)
 	}
+
+	match := slices.IndexFunc(data.Responses, func(r singleResponse) bool {
+		want, err := newCertID(r.CertID.HashAlgorithm.Algorithm, serial, issuer)
+		return err == nil && r.CertID.Serial.Cmp(serial) == 0 &&
+			bytes.Equal(r.CertID.NameHash, want.NameHash) && bytes.Equal(r.CertID.KeyHash, want.KeyHash)
+	})
+	if match < 0 {
+		return nil, nil, fmt.Errorf("%w %x of %s", errNoStatus, serial, issuer.Subject)
+	}
+	r := data.Responses[match]
 
 	pool := []*x509.Certificate{issuer}
 	for _, raw := range basic.Certs {
@@ -153,6 +169,7 @@ func parseOCSPResponse(der []byte, serial *big.Int, issuer *x509.Certificate) (*
 		}
 		pool = append(pool, c)
 	}
+	pool = append(pool, certs...)
 	responder, err := findResponder(data.ResponderID, pool, func(c *x509.Certificate) error {
 		key, err := ParsePublicKey(c.RawSubjectPublicKeyInfo)
 		if err != nil {
@@ -167,46 +184,38 @@ func parseOCSPResponse(der []byte, serial *big.Int, issuer *x509.Certificate) (*
 		return nil, nil, err
 	}
 
-	for _, r := range data.Responses {
-		want, err := newCertID(r.CertID.HashAlgorithm.Algorithm, serial, issuer)
-		if err != nil || r.CertID.Serial.Cmp(serial) != 0 ||
-			!bytes.Equal(r.CertID.NameHash, want.NameHash) || !bytes.Equal(r.CertID.KeyHash, want.KeyHash) {
-			continue
-		}
-		resp := &OCSPResponse{
-			SerialNumber: serial,
-			ProducedAt:   data.ProducedAt,
-			ThisUpdate:   r.ThisUpdate,
-			NextUpdate:   r.NextUpdate,
-			Certificate:  responder,
-			Raw:          der,
-			basic:        outer.Bytes.Response,
-			responderID:  data.ResponderID.FullBytes,
-		}
-		switch s := r.Status; {
-		case s.Class == asn1.ClassContextSpecific && s.Tag == 0:
-			resp.Status = OCSPGood
-		case s.Class == asn1.ClassContextSpecific && s.Tag == 1:
-			var revoked struct {
-				Time   time.Time       `asn1:"generalized"`
-				Reason asn1.Enumerated `asn1:"optional,explicit,tag:0"`
-			}
-			if _, err := asn1.UnmarshalWithParams(s.FullBytes, &revoked, "tag:1"); err != nil {
-				return nil, nil, fmt.Errorf("pki: OCSP RevokedInfo: %w", err)
-			}
-			resp.Status, resp.RevokedAt, resp.RevocationReason = OCSPRevoked, revoked.Time, int(revoked.Reason)
-		case s.Class == asn1.ClassContextSpecific && s.Tag == 2:
-			resp.Status = OCSPUnknown
-		default:
-			return nil, nil, fmt.Errorf("pki: OCSP certificate status with tag %d", s.Tag)
-		}
-		var nonce []byte
-		if i := slices.IndexFunc(data.Extensions, func(e pkix.Extension) bool { return e.Id.Equal(oidOCSPNonce) }); i >= 0 {
-			nonce = data.Extensions[i].Value
-		}
-		return resp, nonce, nil
+	resp := &OCSPResponse{
+		SerialNumber: serial,
+		ProducedAt:   data.ProducedAt,
+		ThisUpdate:   r.ThisUpdate,
+		NextUpdate:   r.NextUpdate,
+		Certificate:  responder,
+		Raw:          der,
+		basic:        outer.Bytes.Response,
+		responderID:  data.ResponderID.FullBytes,
 	}
-	return nil, nil, fmt.Errorf("pki: the OCSP response has no status for certificate %x of %s", serial, issuer.Subject)
+	switch s := r.Status; {
+	case s.Class == asn1.ClassContextSpecific && s.Tag == 0:
+		resp.Status = OCSPGood
+	case s.Class == asn1.ClassContextSpecific && s.Tag == 1:
+		var revoked struct {
+			Time   time.Time       `asn1:"generalized"`
+			Reason asn1.Enumerated `asn1:"optional,explicit,tag:0"`
+		}
+		if _, err := asn1.UnmarshalWithParams(s.FullBytes, &revoked, "tag:1"); err != nil {
+			return nil, nil, fmt.Errorf("pki: OCSP RevokedInfo: %w", err)
+		}
+		resp.Status, resp.RevokedAt, resp.RevocationReason = OCSPRevoked, revoked.Time, int(revoked.Reason)
+	case s.Class == asn1.ClassContextSpecific && s.Tag == 2:
+		resp.Status = OCSPUnknown
+	default:
+		return nil, nil, fmt.Errorf("pki: OCSP certificate status with tag %d", s.Tag)
+	}
+	var nonce []byte
+	if i := slices.IndexFunc(data.Extensions, func(e pkix.Extension) bool { return e.Id.Equal(oidOCSPNonce) }); i >= 0 {
+		nonce = data.Extensions[i].Value
+	}
+	return resp, nonce, nil
 }
 
 // findResponder returns the certificate in pool that id names and whose key
@@ -313,7 +322,7 @@ func (c *OCSPClient) Check(ctx context.Context, cert, issuer *x509.Certificate) 
 	if err != nil {
 		return nil, err
 	}
-	resp, echoed, err := parseOCSPResponse(body, cert.SerialNumber, issuer)
+	resp, echoed, err := parseOCSPResponse(body, cert.SerialNumber, issuer, nil)
 	if err != nil {
 		return nil, err
 	}

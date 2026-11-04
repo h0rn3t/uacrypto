@@ -109,7 +109,13 @@ content, signers, err := pki.VerifySignedData(p7s, nil, nil)      // вміст 
 // signers[i].Certificate, .SigningTime (заява підписувача), .TimeStamp (перевірена позначка CAdES-T)
 _, signers, err = pki.VerifySignedData(p7s, document, nil)         // відокремлений підпис
 _, signers, err = pki.VerifySignedData(p7s, nil, []*x509.Certificate{signerCert}) // сертифіката немає в підписі
+_, signers, err = pki.VerifySignedData(p7s, nil, czoBundle)       // сертифікати з CACertificates.p7b ЦЗО
 ```
+
+ІІТ не кладе в CAdES-T і CAdES-X Long сертифікати TSA й OCSP-сервера: перевіряльник бере їх із пакета
+сертифікатів ЦСК. Тому для таких підписів передайте в `certs` сертифікати з
+[CACertificates.p7b](https://czo.gov.ua/download/certificates/CACertificates.p7b); сертифікати шукаються
+в підписі, у токені позначки часу чи відповіді OCSP, в атрибуті `certValues`, а потім у `certs`.
 
 Перевіряються всі підписувачі: атрибути `contentType` і `messageDigest`, потім підпис ДСТУ 4145.
 Підпис приймається і в записі ІІТ (`r‖s` як є), і в записі Bouncy Castle (`r‖s` у вкладеному
@@ -147,17 +153,31 @@ fmt.Println(ts.Time, ts.Certificate.Subject.CommonName)
 // cadesT — результат AddSignatureTimeStamp; caCerts — сертифікати ЦСК і кореневий сертифікат ЦЗО
 long, err := pki.AddValidationData(ctx, cadesT, caCerts, &pki.OCSPClient{})
 
-_, signers, err := pki.VerifySignedData(long, nil, nil)
+_, signers, err := pki.VerifySignedData(long, nil, czoBundle)
 // signers[i].Chain — шлях від підписувача до кореня, signers[i].OCSP[j] — перевірена відповідь про Chain[j]
+// або nil, якщо в підписі її немає
 ```
 
-Для кожного підписувача будується шлях до самопідписаного кореня з сертифікатів підпису й `caCerts`,
-про кожен сертифікат шляху, крім кореня, питають OCSP-сервер, названий у ньому, і додаються
-непідписані атрибути `completeCertificateRefs`, `completeRevocationRefs`, `certValues` і
-`revocationValues` (RFC 5126) — так, як пишуть українські кваліфіковані засоби й `ua-cryptography-pki`.
-Посилання гешуються алгоритмом підписувача. Потрібен CAdES-T; відкликаний чи невідомий сертифікат —
-помилка. `VerifySignedData` звіряє посилання зі значеннями, будує шлях і перевіряє відповіді OCSP, а
-статуси й час відповідей лишає на ваш розсуд; довіру до кореня перевіряйте окремо.
+Українські засоби пишуть дані для довготривалої перевірки у форматі CAdES-X Long (RFC 5126), а не
+CAdES-B-LT з EN 319 122: так їх називають і [тестові приклади ЦЗО](https://czo.gov.ua/testexamples)
+за наказом Мінцифри № Н 191 (CAdES-BES, CAdES-T, CAdES-C, CAdES-X Long). Усе лежить у непідписаних
+атрибутах `completeCertificateRefs`, `completeRevocationRefs`, `certValues` і `revocationValues`, поле
+`crls` у SignedData порожнє. ІІТ пише дві форми:
+
+| ІІТ | Відповіді OCSP | Сертифікати TSA й OCSP-серверів |
+|---|---|---|
+| «з повними даними для перевірки» | лише про сертифікат підписувача | немає, беруться з пакета ЦСК |
+| «з повними даними ЦСК для перевірки» | про підписувача й про ЦСК | у токені й відповідях |
+
+`AddValidationData` пише другу, повнішу форму: будує шлях до самопідписаного кореня з сертифікатів
+підпису й `caCerts`, питає про кожен сертифікат шляху, крім кореня, OCSP-сервер, названий у ньому, і
+кладе в `certValues` і `completeCertificateRefs` (з `issuerSerial`) сертифікати ЦСК шляху, а в
+`completeRevocationRefs` — по посиланню на кожен сертифікат шляху, кореневе порожнє. Посилання
+гешуються алгоритмом підписувача. Потрібен CAdES-T; відкликаний чи невідомий сертифікат — помилка.
+
+`VerifySignedData` читає обидві форми: звіряє посилання зі значеннями, будує шлях і перевіряє кожну
+наявну відповідь OCSP, а статуси й час відповідей лишає на ваш розсуд; довіру до кореня перевіряйте
+окремо. Обидві форми перевірено на тестових прикладах ЦЗО (`pki/testdata/czo-test-*`).
 
 ### Статус сертифіката (OCSP)
 

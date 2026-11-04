@@ -31,7 +31,7 @@ type otherHash struct {
 
 type otherCertID struct {
 	Hash         otherHash
-	IssuerSerial asn1.RawValue `asn1:"optional"`
+	IssuerSerial issuerSerial `asn1:"optional"`
 }
 
 type ocspResponsesID struct {
@@ -65,13 +65,14 @@ func hashOf(alg asn1.ObjectIdentifier, data []byte) (otherHash, error) {
 	return otherHash{pkix.AlgorithmIdentifier{Algorithm: alg}, h.Sum(nil)}, nil
 }
 
-// AddValidationData turns CAdES-T into CAdES-X Long (RFC 5126, 6.3.4), the
-// long-term validation data that Ukrainian qualified tools write. For every
-// signer it builds the path from the signer certificate to a self-signed
-// root out of the certificates in signed and certs, asks ocsp about every
-// certificate in the path but the root, and adds the unsigned attributes
-// completeCertificateRefs and certValues over the CA and OCSP responder
-// certificates, and completeRevocationRefs and revocationValues over the
+// AddValidationData turns CAdES-T into CAdES-X Long (RFC 5126, 6.3.4) as IIT
+// writes it with "full CA data", the format the ЦЗО test examples name
+// CAdES-X Long. For every signer it builds the path from the signer
+// certificate to a self-signed root out of the certificates in signed and
+// certs, asks ocsp about every certificate in the path but the root, and
+// adds the unsigned attributes completeCertificateRefs and certValues over
+// the CA certificates of the path, completeRevocationRefs with one
+// reference per certificate of the path, and revocationValues with the
 // responses. The references hash with the signer's digest algorithm.
 //
 // Every signer must have a signature time-stamp and no validation data yet,
@@ -122,10 +123,12 @@ func AddValidationData(ctx context.Context, signed []byte, certs []*x509.Certifi
 }
 
 // validationData asks ocsp about every certificate of path but the root and
-// returns the CAdES-X Long attributes with references hashed by alg.
+// returns the CAdES-X Long attributes with references hashed by alg. The
+// responder is the issuer or carried in its response, so certValues holds
+// the CAs of the path only.
 func validationData(ctx context.Context, path []*x509.Certificate, ocsp *OCSPClient, alg asn1.ObjectIdentifier) ([]attribute, error) {
-	certs := slices.Clone(path[1:])
-	var ocspIDs []ocspResponsesID
+	// RFC 5126, 5.7.2: the signer's reference, then one per completeCertificateRefs entry
+	revocationRefs := make([]crlOcspRef, len(path))
 	var ocspValues []asn1.RawValue
 	for i, cert := range path[:len(path)-1] {
 		resp, err := ocsp.Check(ctx, cert, path[i+1])
@@ -139,30 +142,26 @@ func validationData(ctx context.Context, path []*x509.Certificate, ocsp *OCSPCli
 		case OCSPUnknown:
 			return nil, fmt.Errorf("pki: the OCSP responder does not know certificate %s", cert.Subject)
 		}
-		if !resp.Certificate.Equal(path[0]) && !slices.ContainsFunc(certs, resp.Certificate.Equal) {
-			certs = append(certs, resp.Certificate)
-		}
 		var id ocspResponsesID
 		id.Identifier.ResponderID = asn1.RawValue{FullBytes: resp.responderID}
 		id.Identifier.ProducedAt = resp.ProducedAt
 		if id.Hash, err = hashOf(alg, resp.basic); err != nil {
 			return nil, err
 		}
-		ocspIDs = append(ocspIDs, id)
+		revocationRefs[i].OCSP.Responses = []ocspResponsesID{id}
 		ocspValues = append(ocspValues, asn1.RawValue{FullBytes: resp.basic})
 	}
-	certRefs := make([]otherCertID, 0, len(certs))
-	certValues := make([]asn1.RawValue, 0, len(certs))
-	for _, c := range certs {
+	cas := path[1:]
+	certRefs := make([]otherCertID, 0, len(cas))
+	certValues := make([]asn1.RawValue, 0, len(cas))
+	for _, c := range cas {
 		hash, err := hashOf(alg, c.Raw)
 		if err != nil {
 			return nil, err
 		}
-		certRefs = append(certRefs, otherCertID{Hash: hash})
+		certRefs = append(certRefs, otherCertID{Hash: hash, IssuerSerial: newIssuerSerial(c)})
 		certValues = append(certValues, asn1.RawValue{FullBytes: c.Raw})
 	}
-	var revocationRef crlOcspRef
-	revocationRef.OCSP.Responses = ocspIDs
 
 	var attrs []attribute
 	for _, a := range []struct {
@@ -170,7 +169,7 @@ func validationData(ctx context.Context, path []*x509.Certificate, ocsp *OCSPCli
 		value any
 	}{
 		{oidCertificateRefs, certRefs},
-		{oidRevocationRefs, []crlOcspRef{revocationRef}},
+		{oidRevocationRefs, revocationRefs},
 		{oidCertValues, certValues},
 		{oidRevocationValues, revocationValues{OCSP: ocspValues}},
 	} {
@@ -200,23 +199,28 @@ func certificatePath(cert *x509.Certificate, pool []*x509.Certificate) ([]*x509.
 	return path, nil
 }
 
-// verifyValidationData checks the CAdES-X Long values in the unsigned
-// attributes attrs of the signer with cert: every reference names a value,
-// the certificates make a path to a self-signed root, and every certificate
-// in it but the root has a verified OCSP response. A signer without values
-// has nil path and responses.
-func verifyValidationData(attrs []attribute, cert *x509.Certificate, pool []*x509.Certificate) ([]*x509.Certificate, []*OCSPResponse, error) {
-	var certRefs []otherCertID
-	var revocationRefs []crlOcspRef
+// longTermData is the CAdES-C references and CAdES-X Long values of a signer.
+type longTermData struct {
+	certRefs       []otherCertID
+	revocationRefs []crlOcspRef
+	rawCerts       [][]byte // certValues
+	certs          []*x509.Certificate
+	basics         [][]byte // the BasicOCSPResponses of revocationValues
+}
+
+// parseLongTermData reads the CAdES-C and CAdES-X Long attributes among the
+// unsigned attributes attrs.
+func parseLongTermData(attrs []attribute) (longTermData, error) {
+	var d longTermData
 	var certValues []asn1.RawValue
 	var revocations revocationValues
 	for _, a := range attrs {
 		var v any
 		switch {
 		case a.Type.Equal(oidCertificateRefs):
-			v = &certRefs
+			v = &d.certRefs
 		case a.Type.Equal(oidRevocationRefs):
-			v = &revocationRefs
+			v = &d.revocationRefs
 		case a.Type.Equal(oidCertValues):
 			v = &certValues
 		case a.Type.Equal(oidRevocationValues):
@@ -225,38 +229,43 @@ func verifyValidationData(attrs []attribute, cert *x509.Certificate, pool []*x50
 			continue
 		}
 		if err := unmarshal(a.Values.Bytes, v); err != nil {
-			return nil, nil, fmt.Errorf("attribute %v: %w", a.Type, err)
+			return longTermData{}, fmt.Errorf("attribute %v: %w", a.Type, err)
 		}
 	}
-	if certValues == nil && revocations.OCSP == nil {
-		return nil, nil, nil
-	}
-
-	rawCerts := make([][]byte, 0, len(certValues))
-	pool = slices.Clone(pool)
 	for _, v := range certValues {
 		c, err := x509.ParseCertificate(v.FullBytes)
 		if err != nil {
-			return nil, nil, fmt.Errorf("certValues: %w", err)
+			return longTermData{}, fmt.Errorf("certValues: %w", err)
 		}
-		rawCerts = append(rawCerts, v.FullBytes)
-		pool = append(pool, c)
+		d.rawCerts = append(d.rawCerts, v.FullBytes)
+		d.certs = append(d.certs, c)
 	}
-	basics := make([][]byte, 0, len(revocations.OCSP))
 	for _, v := range revocations.OCSP {
-		basics = append(basics, v.FullBytes)
+		d.basics = append(d.basics, v.FullBytes)
 	}
-	for _, ref := range certRefs {
-		if err := referenced(ref.Hash, rawCerts); err != nil {
+	return d, nil
+}
+
+// verify checks d for the signer with cert: every reference names a value,
+// the certificates make a path to a self-signed root, and every OCSP
+// response about a certificate of the path verifies. A signer without
+// values has nil path and responses; responses[i] is about path[i], nil when
+// there is none.
+func (d longTermData) verify(cert *x509.Certificate, pool []*x509.Certificate) ([]*x509.Certificate, []*OCSPResponse, error) {
+	if d.rawCerts == nil && d.basics == nil {
+		return nil, nil, nil // CAdES-C references alone name values kept elsewhere
+	}
+	for _, ref := range d.certRefs {
+		if err := referenced(ref.Hash, d.rawCerts); err != nil {
 			return nil, nil, fmt.Errorf("completeCertificateRefs: %w", err)
 		}
 	}
-	for _, ref := range revocationRefs {
+	for _, ref := range d.revocationRefs {
 		for _, id := range ref.OCSP.Responses {
 			if id.Hash.Algorithm.Algorithm == nil {
 				continue // without ocspRepHash a reference names no value
 			}
-			if err := referenced(id.Hash, basics); err != nil {
+			if err := referenced(id.Hash, d.basics); err != nil {
 				return nil, nil, fmt.Errorf("completeRevocationRefs: %w", err)
 			}
 		}
@@ -266,25 +275,28 @@ func verifyValidationData(attrs []attribute, cert *x509.Certificate, pool []*x50
 	if err != nil {
 		return nil, nil, err
 	}
-	responses := make([]*OCSPResponse, 0, len(path)-1)
+	responses := make([]*OCSPResponse, len(path)-1)
 	for i, c := range path[:len(path)-1] {
-		resp, err := findOCSPResponse(basics, c, path[i+1])
+		resp, err := findOCSPResponse(d.basics, c, path[i+1], pool)
+		if errors.Is(err, errNoStatus) {
+			continue // IIT stores no response about the CAs without "full CA data"
+		}
 		if err != nil {
 			return nil, nil, err
 		}
-		responses = append(responses, resp)
+		responses[i] = resp
 	}
 	return path, responses, nil
 }
 
-// findOCSPResponse returns the first of the BasicOCSPResponses basics that
-// ParseOCSPResponse accepts about cert issued by issuer.
-func findOCSPResponse(basics [][]byte, cert, issuer *x509.Certificate) (*OCSPResponse, error) {
+// findOCSPResponse returns the first of the BasicOCSPResponses basics about
+// cert issued by issuer, verified with the responder taken from the response
+// or from pool; errNoStatus when none is about cert.
+func findOCSPResponse(basics [][]byte, cert, issuer *x509.Certificate, pool []*x509.Certificate) (*OCSPResponse, error) {
 	type responseBytes struct {
 		Type     asn1.ObjectIdentifier
 		Response []byte
 	}
-	errs := fmt.Errorf("no OCSP response about %s", cert.Subject)
 	for _, basic := range basics {
 		der, err := asn1.Marshal(struct {
 			Status asn1.Enumerated
@@ -293,13 +305,16 @@ func findOCSPResponse(basics [][]byte, cert, issuer *x509.Certificate) (*OCSPRes
 		if err != nil {
 			return nil, fmt.Errorf("OCSPResponse: %w", err)
 		}
-		resp, err := ParseOCSPResponse(der, cert.SerialNumber, issuer)
-		if err == nil {
-			return resp, nil
+		resp, _, err := parseOCSPResponse(der, cert.SerialNumber, issuer, pool)
+		if errors.Is(err, errNoStatus) {
+			continue
 		}
-		errs = errors.Join(errs, err)
+		if err != nil {
+			return nil, fmt.Errorf("OCSP response about %s: %w", cert.Subject, err)
+		}
+		return resp, nil
 	}
-	return nil, errs
+	return nil, fmt.Errorf("%w %x of %s", errNoStatus, cert.SerialNumber, issuer.Subject)
 }
 
 // referenced checks that ref is the hash of one of values.

@@ -58,13 +58,14 @@ type tstInfo struct {
 // the message imprint, a Kupyna or GOST 34.311 (ДКЕ №1) hash of data. A
 // token over other data is ErrInvalidSignature.
 func VerifyTimeStamp(token, data []byte) (*TimeStamp, error) {
-	ts, _, err := verifyTimeStamp(token, data)
+	ts, _, err := verifyTimeStamp(token, data, nil)
 	return ts, err
 }
 
-// verifyTimeStamp is VerifyTimeStamp that also returns the nonce of the token.
-func verifyTimeStamp(token, data []byte) (*TimeStamp, *big.Int, error) {
-	contentType, content, signers, err := verifySignedData(token, nil, nil)
+// verifyTimeStamp is VerifyTimeStamp that also returns the nonce of the
+// token and looks the TSA certificate up in certs when the token lacks it.
+func verifyTimeStamp(token, data []byte, certs []*x509.Certificate) (*TimeStamp, *big.Int, error) {
+	contentType, content, signers, err := verifySignedData(token, nil, certs)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -151,7 +152,7 @@ func (c *TSAClient) timeStamp(ctx context.Context, alg asn1.ObjectIdentifier, da
 	if token == nil {
 		return nil, nil, errors.New("pki: TSA granted the request but sent no token")
 	}
-	ts, echoed, err := verifyTimeStamp(token, data)
+	ts, echoed, err := verifyTimeStamp(token, data, nil)
 	if err != nil {
 		return nil, nil, err
 	}
