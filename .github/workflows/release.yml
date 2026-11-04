@@ -14,8 +14,21 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          fetch-depth: 0 # the previous tag and the commits since it
+          fetch-depth: 0 # the previous tag
           fetch-tags: true
+
+      # checkout leaves the pushed tag lightweight, and its "contents" would be the commit message
+      - name: Read the release notes from the tag annotation
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
+          message=$(git tag -l --format='%(contents)' "$TAG")
+          if [ "$(git cat-file -t "$TAG")" != tag ] || [ -z "$message" ] || [ "$message" = "$TAG" ]; then
+            echo "::error::$TAG needs an annotation with the release notes in Ukrainian"
+            exit 1
+          fi
+          printf '%s\n' "$message" > notes.md
 
       - uses: actions/setup-go@v6
         with:
@@ -36,25 +49,11 @@ jobs:
             exit 0
           fi
 
-          # the tag annotation when it says more than the tag name, then the commits since the previous tag
-          {
-            message=$(git tag -l --format='%(contents)' "$TAG")
-            if [ -n "$message" ] && [ "$message" != "$TAG" ]; then
-              printf '%s\n\n' "$message"
-            fi
-            previous=$(git describe --tags --abbrev=0 "$TAG^" 2>/dev/null || true)
-            if [ -n "$previous" ]; then
-              echo "## Зміни від $previous"
-              echo
-              git log --no-merges --format='- %s (%h)' "$previous..$TAG"
-              echo
-              echo "**Повний список:** https://github.com/$GITHUB_REPOSITORY/compare/$previous...$TAG"
-            else
-              echo "## Зміни"
-              echo
-              git log --no-merges --format='- %s (%h)' "$TAG"
-            fi
-          } > notes.md
+          # the commits are in English: the notes link to them instead of listing them
+          previous=$(git describe --tags --abbrev=0 "$TAG^" 2>/dev/null || true)
+          if [ -n "$previous" ]; then
+            printf '\n**Повний список змін:** https://github.com/%s/compare/%s...%s\n' "$GITHUB_REPOSITORY" "$previous" "$TAG" >> notes.md
+          fi
 
           gh release create "$TAG" --title "$TAG" --verify-tag --notes-file notes.md
 
