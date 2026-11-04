@@ -106,3 +106,15 @@ func TestUnpackDKE(t *testing.T) {
 		}
 	}
 }
+
+func TestPackDKE(t *testing.T) {
+	packed := mustHex(t, "a9d6eb45f13c708280c4967b231f5eadf658eba4c037291d38d96bf025ca4e17f8e9720dc615b43a28975f0bc1dea36438b564ea2c179fd0123e6db8fac57904")
+	if got := PackDKE(DKE1()); !bytes.Equal(got, packed) {
+		t.Errorf("PackDKE(DKE1()) = %x, want %x", got, packed)
+	}
+	other := DKE1()
+	other[7][15], other[7][14] = other[7][14], other[7][15]
+	if back, err := UnpackDKE(PackDKE(other)); err != nil || back != other {
+		t.Errorf("UnpackDKE(PackDKE(s)) = %x, %v, want s", back, err)
+	}
+}

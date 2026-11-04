@@ -10,6 +10,13 @@
 // revocation status of a certificate, and AddValidationData stores the
 // statuses in a signature as CAdES-X Long.
 //
+// For a CA, CreateCertificate issues certificates from crypto/x509
+// templates, ParseCertificateRequest checks PKCS#10 requests,
+// CreateOCSPResponse and CreateTimeStampResponse answer what
+// ParseOCSPRequest and ParseTimeStampRequest read, and the PKCS#8 and .p7b
+// functions store keys and certificate bundles as Bouncy Castle and the ЦЗО
+// do.
+//
 // Supported keys use the OID dstu4145le (1.2.804.2.1.1.1.1.3.1.1) or
 // dstu4145be (1.2.804.2.1.1.1.1.3.1.1.1.1) with one of the ten named curves,
 // given by OID or by explicit parameters, and an optional DKE. Supported

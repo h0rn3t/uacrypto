@@ -1,4 +1,21 @@
 package pki
 
+import (
+	"crypto/x509"
+	"encoding/asn1"
+	"io"
+
+	"github.com/h0rn3t/uacrypto/dstu4145"
+)
+
 // SignContent lets tests sign content types other than data, as a TSA signs TSTInfo.
-var SignContent = signContent
+func SignContent(random io.Reader, contentType asn1.ObjectIdentifier, content []byte, key *dstu4145.PrivateKey, cert *x509.Certificate, opts SignOptions) ([]byte, error) {
+	sd, err := signContent(random, contentType, content, key, cert, opts)
+	if err != nil {
+		return nil, err
+	}
+	return sd.marshal()
+}
+
+// ToDER lets tests reach the BER normalization of the request parsers.
+var ToDER = toDER

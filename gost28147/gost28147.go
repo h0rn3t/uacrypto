@@ -52,6 +52,15 @@ func UnpackDKE(dke []byte) (Sbox, error) {
 	return unpack([64]byte(dke)), nil
 }
 
+// PackDKE converts s into the packed 64-byte form of UnpackDKE.
+func PackDKE(s Sbox) []byte {
+	dke := make([]byte, len(dke1))
+	for i := range dke {
+		dke[i] = s[i/8][2*(i%8)]<<4 | s[i/8][2*(i%8)+1]&0xf
+	}
+	return dke
+}
+
 func unpack(dke [64]byte) Sbox {
 	var s Sbox
 	for i, b := range dke {

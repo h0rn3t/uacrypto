@@ -20,8 +20,8 @@
 | [`gost34311`](https://pkg.go.dev/github.com/h0rn3t/uacrypto/gost34311) | ГОСТ 34.311-95 — функція гешування | `hash.Hash`, ДКЕ №1 за замовчуванням або власний S-блок |
 | [`kupyna`](https://pkg.go.dev/github.com/h0rn3t/uacrypto/kupyna) | ДСТУ 7564:2014 «Купина» — функція гешування | `hash.Hash` на 256, 384 і 512 біт |
 | [`kalyna`](https://pkg.go.dev/github.com/h0rn3t/uacrypto/kalyna) | ДСТУ 7624:2014 «Калина» — блоковий шифр | `cipher.Block` з блоком 128, 256 і 512 біт і всіма ключами стандарту |
-| [`pki`](https://pkg.go.dev/github.com/h0rn3t/uacrypto/pki) | X.509 і CMS з ДСТУ 4145 | ключ ДСТУ 4145 із сертифіката (явні параметри чи OID кривої, ДКЕ, le/be), перевірка підпису сертифіката (ГОСТ 34.311, Купина-256, Купина-512), створення й перевірка CMS SignedData: файлів `.p7s` (CAdES-BES, CAdES-T і CAdES-X Long) і позначок часу RFC 3161, клієнт TSP, клієнт OCSP і перевірка відповідей OCSP |
-| [`gost28147`](https://pkg.go.dev/github.com/h0rn3t/uacrypto/gost28147) | ГОСТ 28147-89 — блоковий шифр | `cipher.Block`, ДКЕ №1 і розпакування ДКЕ з параметрів ключа |
+| [`pki`](https://pkg.go.dev/github.com/h0rn3t/uacrypto/pki) | X.509 і CMS з ДСТУ 4145 | ключ ДСТУ 4145 із сертифіката (явні параметри чи OID кривої, ДКЕ, le/be), перевірка підпису сертифіката (ГОСТ 34.311, Купина-256, Купина-512), створення й перевірка CMS SignedData: файлів `.p7s` (CAdES-BES, CAdES-T і CAdES-X Long) і позначок часу RFC 3161, клієнт TSP, клієнт OCSP і перевірка відповідей OCSP; для ЦСК — випуск сертифікатів, PKCS#10, ключі PKCS#8 у форматі BC, відповіді OCSP і позначки часу, пакети `.p7b` |
+| [`gost28147`](https://pkg.go.dev/github.com/h0rn3t/uacrypto/gost28147) | ГОСТ 28147-89 — блоковий шифр | `cipher.Block`, ДКЕ №1, розпакування й пакування ДКЕ параметрів ключа |
 
 ## Встановлення
 
@@ -201,6 +201,44 @@ resp, err = pki.ParseOCSPResponse(der, cert.SerialNumber, issuer) // збере�
 SubjectKeyId (так пише monobank). `ParseOCSPResponse` не перевіряє свіжість — порівняйте
 `ThisUpdate` і `NextUpdate` з потрібним часом; `resp.Raw` — уся відповідь для зберігання.
 
+### ЦСК: сертифікати, заявки, OCSP і TSP
+
+Те, що потрібно тестовому ЦСК (на цьому API працює test-ca DATAHUB, сумісний із ca.java на Bouncy Castle):
+
+```go
+// ключ і самопідписаний корінь; шаблон — звичайний x509.Certificate
+key, _ := dstu4145.GenerateKey(curve, rand.Reader)
+spki, _ := pki.MarshalPublicKey(&pki.PublicKey{Key: key.Public(), DKE: gost28147.DKE1()})
+rootDER, _ := pki.CreateCertificate(rand.Reader, tmpl, tmpl, spki, key)
+pkcs8, _ := pki.MarshalPKCS8PrivateKey(key) // як пише BC; pki.ParsePKCS8PrivateKey читає назад
+
+// заявка PKCS#10 (DER або BER): ключ іншого алгоритму розбирається з PublicKey == nil
+req, _ := pki.ParseCertificateRequest(p10)
+err := req.CheckSignature() // володіння ключем; pki.ErrInvalidSignature або x509.ErrUnsupportedAlgorithm
+userDER, _ := pki.CreateCertificate(rand.Reader, userTmpl, root, req.RawSubjectPublicKeyInfo, key)
+
+// OCSP-відповідач
+ocspReq, _ := pki.ParseOCSPRequest(body)
+issued, _ := ocspReq.CertIDs[0].IssuedBy(root) // ГОСТ 34.311, Купина, SHA-1/2/3, MD5
+resp, _ := pki.CreateOCSPResponse(rand.Reader, &pki.OCSPResponseTemplate{...}, responder, responderKey)
+
+// TSA: політика, nonce, розширення й certReq — із запиту; невідомий геш — відмова badAlg
+tsReq, _ := pki.ParseTimeStampRequest(body)
+tsResp, _ := pki.CreateTimeStampResponse(rand.Reader, tsReq, &pki.TimeStamp{Time: time.Now(), SerialNumber: serial, Policy: policy, Certificate: tsa}, tsaKey)
+
+// пакет сертифікатів, як CACertificates.p7b
+certs, _ := pki.ParseCertificateBundle(p7b)
+p7b, _ = pki.MarshalCertificateBundle(certs)
+```
+
+`CreateCertificate` бере поля шаблону з `crypto/x509` і підписує ДСТУ 4145 + ГОСТ 34.311 (`dstu4145le`).
+Ключ власника йде в сертифікат як є: українські засоби пишуть явні параметри кривої і ДКЕ, і
+перекодування їх змінило б. Типові значення — як у сертифікатах ЦЗО: SKI — ГОСТ 34.311 бітів ключа,
+AKI самопідписаного — його SKI, розширене призначення лише timeStamping — критичне (RFC 3161).
+`ExtraExtensions` замінюють побудовані розширення, як у `crypto/x509`: так test-ca пише AKI з іменем
+і серійним номером видавця і критичне призначення OCSP-сервера. Заявки, запити OCSP і TSP приймаються
+і в BER — Bouncy Castle теж їх приймає.
+
 ### Збереження приватного ключа
 
 ```go
@@ -316,7 +354,8 @@ h, err := gost34311.NewWithSbox(sbox)
 - [x] TSP: клієнт, перевірка позначок часу, CAdES-T
 - [x] OCSP: клієнт і перевірка відповідей
 - [x] CAdES-X Long (дані для довготривалої перевірки)
-- [ ] PKCS#10; випуск сертифікатів; CMS у BER
+- [x] Випуск сертифікатів, PKCS#10, ключі PKCS#8, відповіді OCSP і позначки часу для ЦСК
+- [ ] CMS у BER
 - [x] Кодування підпису `r || s` як частина API
 - [x] ДСТУ 7624:2014 «Калина» (блоковий шифр)
 - [ ] Режими «Калини» з ДСТУ 7624: CMAC, GCM, CCM, XTS, обгортання ключів

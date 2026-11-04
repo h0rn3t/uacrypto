@@ -383,16 +383,20 @@ type SignOptions struct {
 //
 // SignData fails if key does not belong to cert.
 func SignData(random io.Reader, content []byte, key *dstu4145.PrivateKey, cert *x509.Certificate, opts SignOptions) ([]byte, error) {
-	return signContent(random, oidData, content, key, cert, opts)
+	sd, err := signContent(random, oidData, content, key, cert, opts)
+	if err != nil {
+		return nil, err
+	}
+	return sd.marshal()
 }
 
-// signContent is SignData for any content type.
-func signContent(random io.Reader, contentType asn1.ObjectIdentifier, content []byte, key *dstu4145.PrivateKey, cert *x509.Certificate, opts SignOptions) ([]byte, error) {
+// signContent is SignData for any content type, before marshalling.
+func signContent(random io.Reader, contentType asn1.ObjectIdentifier, content []byte, key *dstu4145.PrivateKey, cert *x509.Certificate, opts SignOptions) (*signedData, error) {
 	pub, err := ParsePublicKey(cert.RawSubjectPublicKeyInfo)
 	if err != nil {
 		return nil, err
 	}
-	if pub.Key.Curve() != key.Public().Curve() || !bytes.Equal(pub.Key.Bytes(), key.Public().Bytes()) {
+	if !pub.belongsTo(key) {
 		return nil, errors.New("pki: the private key does not belong to the certificate")
 	}
 	digestAlg, signatureAlg := oidKupyna256, oidDSTU4145Kupyna256
@@ -498,5 +502,5 @@ func signContent(random io.Reader, contentType asn1.ObjectIdentifier, content []
 			Signature:          dstu4145.MarshalSignature(key.Public().Curve(), r, sv),
 		}},
 	}
-	return sd.marshal()
+	return &sd, nil
 }

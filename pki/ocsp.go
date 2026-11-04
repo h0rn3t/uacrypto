@@ -13,8 +13,6 @@ import (
 	"net/http"
 	"slices"
 	"time"
-
-	"github.com/h0rn3t/uacrypto/gost28147"
 )
 
 var (
@@ -86,7 +84,7 @@ func newCertID(alg asn1.ObjectIdentifier, serial *big.Int, issuer *x509.Certific
 		data []byte
 		sum  *[]byte
 	}{{issuer.RawSubject, &id.NameHash}, {spki.PublicKey.RightAlign(), &id.KeyHash}} {
-		h, err := newHash(alg, gost28147.DKE1())
+		h, err := certIDHash(alg)
 		if err != nil {
 			return certID{}, err
 		}
