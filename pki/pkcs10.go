@@ -100,6 +100,22 @@ func (cr *CertificateRequest) CheckSignature() error {
 	return cr.PublicKey.CheckSignature(cr.SignatureAlgorithm, cr.RawTBSCertificateRequest, cr.Signature)
 }
 
+// CertificatePublicKey returns the SubjectPublicKeyInfo of the certificate
+// issued on cr, the pub of CreateCertificate, as Ukrainian CAs write keys:
+// a dstu4145le key, as IIT requests carry it, as it is, and a dstu4145be key,
+// as Bouncy Castle requests carry it, in the little-endian form of
+// MarshalPublicKey. A key of another algorithm wraps
+// x509.ErrUnsupportedAlgorithm.
+func (cr *CertificateRequest) CertificatePublicKey() ([]byte, error) {
+	switch {
+	case cr.PublicKey == nil:
+		return nil, fmt.Errorf("pki: public key algorithm %v: %w", cr.PublicKeyAlgorithm, x509.ErrUnsupportedAlgorithm)
+	case cr.PublicKeyAlgorithm.Equal(oidDSTU4145LE):
+		return cr.RawSubjectPublicKeyInfo, nil
+	}
+	return MarshalPublicKey(cr.PublicKey)
+}
+
 // CreateCertificateRequest creates a PKCS#10 request as
 // crypto/x509.CreateCertificateRequest does, for the public key of key in
 // the form of MarshalPublicKey, signed by key with DSTU 4145 and GOST 34.311

@@ -3,7 +3,6 @@ package pki
 import (
 	"crypto/x509/pkix"
 	"encoding/asn1"
-	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -49,6 +48,10 @@ func ParseTimeStampRequest(der []byte) (*TimeStampRequest, error) {
 	}, nil
 }
 
+// oidTimeStampPolicy is the policy of Ukrainian TSAs that sign with
+// GOST 34.311.
+var oidTimeStampPolicy = asn1.ObjectIdentifier{1, 2, 804, 2, 1, 1, 1, 2, 3, 1}
+
 // timeStampDigests are the hashes of a message imprint that a TSA stamps,
 // the ones the TSA of ca.java on Bouncy Castle accepted.
 var timeStampDigests = []asn1.ObjectIdentifier{
@@ -58,8 +61,10 @@ var timeStampDigests = []asn1.ObjectIdentifier{
 
 // CreateTimeStampResponse answers req with a DER TimeStampResp granting a
 // time-stamp token: TSTInfo with the policy of req, or ts.Policy when req
-// names none, the message imprint of req, ts.SerialNumber, ts.Time to the
-// second, an accuracy of one second, and the nonce and extensions of req,
+// names none, or 1.2.804.2.1.1.1.2.3.1, the policy of Ukrainian TSAs that
+// sign with GOST 34.311 (PrivatBank, the tax service), when neither does;
+// the message imprint of req, ts.SerialNumber, ts.Time to the second, an
+// accuracy of one second, and the nonce and extensions of req,
 // signed by key for ts.Certificate in the form of SignData with
 // GOST 34.311, carrying the certificate when req.CertReq is set.
 //
@@ -89,7 +94,7 @@ func CreateTimeStampResponse(random io.Reader, req *TimeStampRequest, ts *TimeSt
 		policy = ts.Policy
 	}
 	if policy == nil {
-		return nil, errors.New("pki: no time-stamp policy")
+		policy = oidTimeStampPolicy
 	}
 	info := tstInfo{
 		Version: 1,

@@ -11,7 +11,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"slices"
+	"strings"
+	"unicode"
 
 	"github.com/h0rn3t/uacrypto/dstu4145"
 	"github.com/h0rn3t/uacrypto/gost28147"
@@ -24,7 +27,23 @@ var (
 	oidSubjectDirectoryAttributes = asn1.ObjectIdentifier{2, 5, 29, 9}
 	oidDRFO                       = asn1.ObjectIdentifier{1, 2, 804, 2, 1, 1, 1, 11, 1, 4, 1, 1}
 	oidEDRPOU                     = asn1.ObjectIdentifier{1, 2, 804, 2, 1, 1, 1, 11, 1, 4, 2, 1}
+
+	oidAuthorityKeyIdentifier = asn1.ObjectIdentifier{2, 5, 29, 35}
+	oidSubjectInfoAccess      = asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 1, 11}
+	oidADTimeStamping         = asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 48, 3}
+	oidOCSPNoCheck            = asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 48, 1, 5}
+
+	oidOrganization       = asn1.ObjectIdentifier{2, 5, 4, 10}
+	oidOrganizationalUnit = asn1.ObjectIdentifier{2, 5, 4, 11}
+	oidCommonName         = asn1.ObjectIdentifier{2, 5, 4, 3}
+	oidSerialNumber       = asn1.ObjectIdentifier{2, 5, 4, 5}
+	oidCountry            = asn1.ObjectIdentifier{2, 5, 4, 6}
+	oidLocality           = asn1.ObjectIdentifier{2, 5, 4, 7}
 )
+
+// policyQualified is the certificate policy that every certificate of a
+// Ukrainian CA names (1.2.804.2.1.1.1.2.2).
+var policyQualified = []uint64{1, 2, 804, 2, 1, 1, 1, 2, 2}
 
 // MarshalPublicKey returns the DER SubjectPublicKeyInfo of k in the form of
 // the keys of a Ukrainian CA: the algorithm dstu4145le, DSTU4145Params with
@@ -90,6 +109,8 @@ func (k *PublicKey) belongsTo(key *dstu4145.PrivateKey) bool {
 //   - SubjectKeyId is the GOST 34.311 hash (ДКЕ №1) of the subject public
 //     key bits;
 //   - AuthorityKeyId of a self-signed certificate is its SubjectKeyId;
+//   - Policies is 1.2.804.2.1.1.1.2.2, the policy every certificate of a
+//     Ukrainian CA names, when neither Policies nor PolicyIdentifiers is set;
 //   - ExtKeyUsage of TimeStamping alone is critical, as RFC 3161 requires.
 //
 // ExtraExtensions replace the extensions built from the other fields, as in
@@ -127,6 +148,13 @@ func CreateCertificate(random io.Reader, template, parent *x509.Certificate, pub
 	}
 	if selfSigned && tmpl.AuthorityKeyId == nil {
 		tmpl.AuthorityKeyId = tmpl.SubjectKeyId
+	}
+	if tmpl.Policies == nil && tmpl.PolicyIdentifiers == nil {
+		policy, err := x509.OIDFromInts(policyQualified)
+		if err != nil {
+			return nil, fmt.Errorf("pki: certificate policy: %w", err)
+		}
+		tmpl.Policies = []x509.OID{policy}
 	}
 	if slices.Equal(tmpl.ExtKeyUsage, []x509.ExtKeyUsage{x509.ExtKeyUsageTimeStamping}) && tmpl.UnknownExtKeyUsage == nil {
 		eku, err := asn1.Marshal([]asn1.ObjectIdentifier{oidKPTimeStamping})
@@ -410,4 +438,102 @@ func MarshalSubjectAttributes(a SubjectAttributes) (pkix.Extension, error) {
 		return pkix.Extension{}, fmt.Errorf("pki: subjectDirectoryAttributes: %w", err)
 	}
 	return pkix.Extension{Id: oidSubjectDirectoryAttributes, Value: value}, nil
+}
+
+// MarshalName returns name as the DER Name of a certificate subject in the
+// form of Ukrainian CAs, for x509.Certificate.RawSubject: one attribute per
+// RDN in the order O, OU, CN, serialNumber, C, L, serialNumber and C as
+// PrintableString and the others as UTF8String; empty values are left out.
+// crypto/x509 would write another order and a PrintableString wherever the
+// value allows it. Province, StreetAddress, PostalCode and ExtraNames are not
+// supported; Names, which only parsing fills, is ignored.
+func MarshalName(name pkix.Name) ([]byte, error) {
+	if name.Province != nil || name.StreetAddress != nil || name.PostalCode != nil || name.ExtraNames != nil {
+		return nil, errors.New("pki: the name has attributes other than O, OU, CN, serialNumber, C and L")
+	}
+	var rdns pkix.RDNSequence
+	for _, attr := range []struct {
+		oid    asn1.ObjectIdentifier
+		params string
+		values []string
+	}{
+		{oidOrganization, "utf8", name.Organization},
+		{oidOrganizationalUnit, "utf8", name.OrganizationalUnit},
+		{oidCommonName, "utf8", []string{name.CommonName}},
+		{oidSerialNumber, "printable", []string{name.SerialNumber}},
+		{oidCountry, "printable", name.Country},
+		{oidLocality, "utf8", name.Locality},
+	} {
+		for _, v := range attr.values {
+			if v == "" {
+				continue
+			}
+			der, err := asn1.MarshalWithParams(v, attr.params)
+			if err != nil {
+				return nil, fmt.Errorf("pki: name attribute %v: %w", attr.oid, err)
+			}
+			rdns = append(rdns, pkix.RelativeDistinguishedNameSET{{Type: attr.oid, Value: asn1.RawValue{FullBytes: der}}})
+		}
+	}
+	return asn1.Marshal(rdns)
+}
+
+// MarshalAuthorityKeyIdentifier returns the non-critical
+// authorityKeyIdentifier extension (RFC 5280, 4.2.1.1) that names issuer by
+// its key identifier and also by the name of its own issuer and its serial
+// number, as Bouncy Castle's JcaX509ExtensionUtils writes it from the issuer
+// certificate, for x509.Certificate.ExtraExtensions. Without it,
+// CreateCertificate writes the key identifier alone, as Ukrainian CAs do.
+func MarshalAuthorityKeyIdentifier(issuer *x509.Certificate) (pkix.Extension, error) {
+	if len(issuer.SubjectKeyId) == 0 {
+		return pkix.Extension{}, errors.New("pki: the issuer has no subject key identifier")
+	}
+	value, err := asn1.Marshal(struct {
+		KeyID  []byte          `asn1:"tag:0"`
+		Issuer []asn1.RawValue `asn1:"tag:1"` // GeneralNames
+		Serial *big.Int        `asn1:"tag:2"`
+	}{
+		issuer.SubjectKeyId,
+		[]asn1.RawValue{{Class: asn1.ClassContextSpecific, Tag: 4, IsCompound: true, Bytes: issuer.RawIssuer}}, // directoryName
+		issuer.SerialNumber,
+	})
+	if err != nil {
+		return pkix.Extension{}, fmt.Errorf("pki: authorityKeyIdentifier: %w", err)
+	}
+	return pkix.Extension{Id: oidAuthorityKeyIdentifier, Value: value}, nil
+}
+
+// MarshalSubjectInfoAccess returns the non-critical subjectInfoAccess
+// extension (RFC 5280, 4.2.2.2) with the address of the time-stamping
+// service the subject uses (id-ad-timeStamping), for
+// x509.Certificate.ExtraExtensions. The address must be non-empty ASCII.
+func MarshalSubjectInfoAccess(timeStampingURL string) (pkix.Extension, error) {
+	if timeStampingURL == "" || strings.ContainsFunc(timeStampingURL, func(r rune) bool { return r > unicode.MaxASCII }) {
+		return pkix.Extension{}, fmt.Errorf("pki: time-stamping address %q is not a non-empty ASCII URI", timeStampingURL)
+	}
+	type accessDescription struct {
+		Method   asn1.ObjectIdentifier
+		Location asn1.RawValue
+	}
+	value, err := asn1.Marshal([]accessDescription{{
+		oidADTimeStamping,
+		asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: 6, Bytes: []byte(timeStampingURL)}, // uniformResourceIdentifier
+	}})
+	if err != nil {
+		return pkix.Extension{}, fmt.Errorf("pki: subjectInfoAccess: %w", err)
+	}
+	return pkix.Extension{Id: oidSubjectInfoAccess, Value: value}, nil
+}
+
+// OCSPResponderExtensions returns the extensions that CAs on Bouncy Castle
+// write in the certificate of their OCSP responder, for
+// x509.Certificate.ExtraExtensions in place of ExtKeyUsage: the extended key
+// usage OCSPSigning alone and critical, which crypto/x509 writes
+// non-critical, and id-pkix-ocsp-nocheck (RFC 6960, 4.2.2.2.1), which tells
+// clients not to check the status of the responder certificate itself.
+func OCSPResponderExtensions() []pkix.Extension {
+	return []pkix.Extension{
+		{Id: oidExtKeyUsage, Critical: true, Value: []byte{0x30, 0x0a, 0x06, 0x08, 0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x09}}, // SEQUENCE { id-kp-OCSPSigning }
+		{Id: oidOCSPNoCheck, Value: []byte{0x05, 0x00}}, // NULL
+	}
 }

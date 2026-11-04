@@ -14,8 +14,10 @@
 // For a CA, CreateCertificate issues certificates from crypto/x509
 // templates, ParseCertificateRequest checks PKCS#10 requests,
 // CreateOCSPResponse and CreateTimeStampResponse answer what
-// ParseOCSPRequest and ParseTimeStampRequest read, MarshalSubjectAttributes
-// writes the subject's codes, and the PKCS#8 and .p7b
+// ParseOCSPRequest and ParseTimeStampRequest read, MarshalName and
+// MarshalSubjectAttributes write the subject's name and codes,
+// MarshalAuthorityKeyIdentifier, MarshalSubjectInfoAccess and
+// OCSPResponderExtensions the extensions crypto/x509 does not build, and the PKCS#8 and .p7b
 // functions store keys and certificate bundles as Bouncy Castle and the ЦЗО
 // do.
 //
@@ -254,6 +256,22 @@ func CheckCertificateSignature(cert, parent *x509.Certificate) error {
 		return err
 	}
 	return key.CheckSignature(outer.Algorithm.Algorithm, cert.RawTBSCertificate, outer.Signature.RightAlign())
+}
+
+// CertificateSignatureAlgorithm returns the OID of the algorithm cert is
+// signed with, which crypto/x509 reports as UnknownSignatureAlgorithm for
+// DSTU 4145: dstu4145le or dstu4145be with GOST 34.311, or DSTU 4145 with
+// Kupyna-256 or Kupyna-512.
+func CertificateSignatureAlgorithm(cert *x509.Certificate) (asn1.ObjectIdentifier, error) {
+	var outer struct {
+		TBS       asn1.RawValue
+		Algorithm pkix.AlgorithmIdentifier
+		Signature asn1.BitString
+	}
+	if err := unmarshal(cert.Raw, &outer); err != nil {
+		return nil, fmt.Errorf("pki: certificate: %w", err)
+	}
+	return outer.Algorithm.Algorithm, nil
 }
 
 // unmarshal parses der into v and rejects trailing data.

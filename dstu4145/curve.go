@@ -61,6 +61,22 @@ func hexInt(s string) *big.Int {
 	return v
 }
 
+// Numbers of the named curves for NamedCurve, by the degree m of the field.
+// M257 is the curve of Ukrainian qualified certificates and of the keys of
+// CAs, OCSP responders and TSAs; M431 is the curve of root certificates.
+const (
+	M163 = iota
+	M167
+	M173
+	M179
+	M191
+	M233
+	M257
+	M307
+	M367
+	M431
+)
+
 // NamedCurve returns the DSTU 4145-2002 named curve with the given number,
 // the last arc of its OID 1.2.804.2.1.1.1.1.3.1.1.2.id. The numbers and field
 // sizes m are: 0 — 163, 1 — 167, 2 — 173, 3 — 179, 4 — 191, 5 — 233,

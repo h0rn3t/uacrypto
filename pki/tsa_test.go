@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
+	"encoding/hex"
 	"io"
 	"math/big"
 	"net/http"
@@ -211,6 +212,23 @@ func TestCreateTimeStampResponse(t *testing.T) {
 
 // The TSA client accepts what CreateTimeStampResponse issues: signature,
 // time-stamping certificate, imprint and nonce.
+func TestCreateTimeStampResponseDefaultPolicy(t *testing.T) {
+	cert, key := newTestTSA(t)
+	req, err := pki.ParseTimeStampRequest(timeStampRequest(t, nil, nil, false, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := pki.CreateTimeStampResponse(rand.Reader, req, &pki.TimeStamp{Time: time.Now(), SerialNumber: big.NewInt(8), Certificate: cert}, key)
+	if err != nil {
+		t.Fatalf("CreateTimeStampResponse(no policy anywhere) error = %v", err)
+	}
+	fields, _ := tstInfo(t, resp, cert)
+	// PrivatBank's and the tax service's tokens carry this policy (tsa-privatbank-gost.p7s, tsa-tax-gost.p7s)
+	if want := "060a2a862402010101020301"; hex.EncodeToString(fields[1].FullBytes) != want {
+		t.Errorf("CreateTimeStampResponse(no policy anywhere) policy = %x, want %s", fields[1].FullBytes, want)
+	}
+}
+
 func TestCreateTimeStampResponseTSAClient(t *testing.T) {
 	cert, key := newTestTSA(t)
 	srv := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

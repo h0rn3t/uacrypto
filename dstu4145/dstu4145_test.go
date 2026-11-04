@@ -386,3 +386,15 @@ func TestCurveFromParams(t *testing.T) {
 		})
 	}
 }
+
+func TestNamedCurveConstants(t *testing.T) {
+	for _, tt := range []struct{ id, m int }{
+		{M163, 163}, {M167, 167}, {M173, 173}, {M179, 179}, {M191, 191},
+		{M233, 233}, {M257, 257}, {M307, 307}, {M367, 367}, {M431, 431},
+	} {
+		c, err := NamedCurve(tt.id)
+		if err != nil || c.f.m != tt.m {
+			t.Errorf("NamedCurve(M%d = %d) = a curve over GF(2^%d), %v, want GF(2^%d)", tt.m, tt.id, c.f.m, err, tt.m)
+		}
+	}
+}
