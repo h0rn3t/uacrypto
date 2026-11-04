@@ -8,3 +8,4 @@ parity/java/*.jar
 # local Claude Code and MCP settings
 /.claude/
 /.mcp.json
+CLAUDE.md
