@@ -53,7 +53,7 @@ func NewPrivateKey(c *Curve, d []byte) (*PrivateKey, error) {
 }
 
 func newPrivateKey(c *Curve, d scalar) *PrivateKey {
-	return &PrivateKey{pub: PublicKey{curve: c, q: c.neg(c.scalarMult(c.g, d.big()))}, d: d}
+	return &PrivateKey{pub: PublicKey{curve: c, q: c.neg(c.scalarMult(c.g, &d))}, d: d}
 }
 
 // Curve returns the curve of k.
@@ -119,7 +119,7 @@ func ParsePublicKey(c *Curve, data []byte) (*PublicKey, error) {
 	}
 
 	q := point{x: x, y: y}
-	if !c.isOnCurve(q) || !c.scalarMult(q, c.n).inf {
+	if !c.isOnCurve(q) || !c.scalarMultVartime(q, c.n).inf {
 		return nil, errors.New("dstu4145: public key is not in the subgroup of order n")
 	}
 	return &PublicKey{curve: c, q: q}, nil
@@ -136,7 +136,7 @@ func Sign(random io.Reader, k *PrivateKey, hash []byte) (r, s *big.Int, err erro
 		if err != nil {
 			return nil, nil, err
 		}
-		fe := c.scalarMult(c.g, e.big()).x
+		fe := c.scalarMult(c.g, &e).x
 		if fe.isZero() {
 			continue
 		}
@@ -158,7 +158,7 @@ func Verify(k *PublicKey, hash []byte, r, s *big.Int) bool {
 	if r.Sign() <= 0 || s.Sign() <= 0 || r.Cmp(c.n) >= 0 || s.Cmp(c.n) >= 0 {
 		return false
 	}
-	R := c.add(c.scalarMult(c.g, s), c.scalarMult(k.q, r))
+	R := c.add(c.scalarMultVartime(c.g, s), c.scalarMultVartime(k.q, r))
 	if R.inf {
 		return false
 	}

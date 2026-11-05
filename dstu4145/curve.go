@@ -172,8 +172,80 @@ func (c *Curve) add(p, q point) point {
 	return point{x: x, y: y}
 }
 
-// scalarMult is left-to-right double-and-add. It is not constant-time.
-func (c *Curve) scalarMult(p point, k *big.Int) point {
+// scalarMult returns kP for a secret k in [1, n-1] and p of order n with
+// x ≠ 0, in constant time. It is the López–Dahab Montgomery ladder on
+// projective x-coordinates (Hankerson, Menezes, Vanstone, Guide to Elliptic
+// Curve Cryptography, Algorithm 3.40): the pair (jP, (j+1)P) differs by P, so
+// Madd needs only x, and its formulas stay correct when either point is ∞.
+func (c *Curve) scalarMult(p point, k *scalar) point {
+	f := &c.f
+	x := p.x
+	kt := c.ord.fixedLength(k)
+
+	// (x1 : z1) = jP and (x2 : z2) = (j+1)P for j the bits of kt above the
+	// current one, starting at the top bit nbits: j = 1.
+	x1, z1 := x, felem{1}
+	z2 := f.sqr(x)
+	x2 := f.add(f.sqr(z2), c.b)
+	var swapped uint64
+	for i := c.ord.nbits - 1; i >= 0; i-- {
+		bit := -(kt[i/64] >> (i % 64) & 1)
+		cswap(swapped^bit, &x1, &x2)
+		cswap(swapped^bit, &z1, &z2)
+		swapped = bit
+
+		// Madd: (x2 : z2) = jP + (j+1)P; Mdouble: (x1 : z1) = 2jP.
+		a, b := f.mul(x1, z2), f.mul(x2, z1)
+		z2 = f.sqr(f.add(a, b))
+		x2 = f.add(f.mul(x, z2), f.mul(a, b))
+		xx, zz := f.sqr(x1), f.sqr(z1)
+		z1 = f.mul(xx, zz)
+		x1 = f.add(f.sqr(xx), f.mul(c.b, f.sqr(zz)))
+	}
+	cswap(swapped, &x1, &x2)
+	cswap(swapped, &z1, &z2)
+
+	// Mxy: with (x1 : z1) = kP and (x2 : z2) = (k+1)P,
+	//   x3 = x1/z1,
+	//   y3 = (x + x3)·((x1 + x·z1)(x2 + x·z2) + (x² + y)·z1·z2) / (x·z1·z2) + y,
+	// with one inversion. For k = n-1, z2 = 0: z2 is replaced by 1 so that
+	// 1/z1 stays available, and the result is -P = (x, x + y).
+	infMask := zeroMask(z2)
+	one := felem{1}
+	z2n := z2
+	cswap(infMask, &z2n, &one)
+	z1z2 := f.mul(z1, z2n)
+	t := f.inv(f.mul(x, z1z2))
+	x3 := f.mul(f.mul(x1, f.mul(x, z2n)), t)
+	u := f.mul(f.add(x1, f.mul(x, z1)), f.add(x2, f.mul(x, z2n)))
+	u = f.add(u, f.mul(f.add(f.sqr(x), p.y), z1z2))
+	y3 := f.add(f.mul(f.mul(f.add(x, x3), u), t), p.y)
+	negY := f.add(x, p.y)
+	cswap(infMask, &y3, &negY)
+	return point{x: x3, y: y3}
+}
+
+// cswap exchanges a and b when mask is all ones and leaves them when it is 0.
+func cswap(mask uint64, a, b *felem) {
+	for i := range a {
+		t := (a[i] ^ b[i]) & mask
+		a[i] ^= t
+		b[i] ^= t
+	}
+}
+
+// zeroMask is all ones when a is 0 and 0 otherwise.
+func zeroMask(a felem) uint64 {
+	var acc uint64
+	for _, w := range a {
+		acc |= w
+	}
+	return ((acc | -acc) >> 63) - 1
+}
+
+// scalarMultVartime is left-to-right double-and-add for public scalars:
+// its time depends on k and on the points it passes through.
+func (c *Curve) scalarMultVartime(p point, k *big.Int) point {
 	r := point{inf: true}
 	for i := k.BitLen() - 1; i >= 0; i-- {
 		r = c.double(r)

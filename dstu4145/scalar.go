@@ -143,6 +143,24 @@ func (o *order) subtractN(t *scalar, hi uint64) scalar {
 	return d
 }
 
+// fixedLength returns k + n or k + 2n for k below n, whichever has bit nbits
+// set: either is k modulo n, and a ladder over it runs the same number of
+// steps for every k. k + n < 2^nbits implies k + 2n < 2^(nbits+1), so the
+// result fits in nbits + 1 ≤ 448 bits.
+func (o *order) fixedLength(k *scalar) scalar {
+	var t scalar
+	var carry uint64
+	for i := range t {
+		t[i], carry = bits.Add64(k[i], o.n[i], carry)
+	}
+	addN := (t[o.nbits/64]>>(o.nbits%64))&1 - 1 // all ones when bit nbits is 0
+	carry = 0
+	for i := range t {
+		t[i], carry = bits.Add64(t[i], o.n[i]&addN, carry)
+	}
+	return t
+}
+
 // randomScalar draws an integer uniformly from [1, n-1] by rejection: the
 // number of attempts does not depend on the accepted value.
 func randomScalar(c *Curve, random io.Reader) (scalar, error) {
