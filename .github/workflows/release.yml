@@ -1,15 +1,31 @@
-# A pushed tag v* becomes a GitHub release once the module builds and its tests pass.
+# A pushed tag v* becomes a GitHub release once the module builds, its tests pass and
+# the secret paths show no timing leak. A manual run only measures the timing.
 name: release
 
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write # gh release create
 
 jobs:
+  ctcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Timing test
+        run: go test -tags ctcheck -count=1 -timeout 30m -v ./internal/ctcheck
+
   release:
+    needs: ctcheck
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
