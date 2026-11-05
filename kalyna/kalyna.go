@@ -151,7 +151,7 @@ func round(s []byte) {
 	for c := range n {
 		for r := range 8 {
 			// row r moves r*n/8 columns, r*blockBits/512 in the standard
-			shifted[8*((c+r*n/8)%n)+r] = spn.Sbox[r%4][s[8*c+r]]
+			shifted[8*((c+r*n/8)%n)+r] = spn.Lookup(&spn.Sbox[r%4], s[8*c+r])
 		}
 	}
 	for c := range n {
@@ -170,7 +170,7 @@ func invRound(s []byte) {
 	var shifted [64]byte
 	for c := range n {
 		for r := range 8 {
-			shifted[8*c+r] = sboxInv[r%4][s[8*((c+r*n/8)%n)+r]]
+			shifted[8*c+r] = spn.Lookup(&sboxInv[r%4], s[8*((c+r*n/8)%n)+r])
 		}
 	}
 	copy(s, shifted[:len(s)])

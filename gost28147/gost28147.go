@@ -8,6 +8,7 @@ package gost28147
 
 import (
 	"crypto/cipher"
+	"crypto/subtle"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -123,12 +124,22 @@ func (c *gostCipher) crypt(dst, src []byte, order *[32]uint8) {
 	binary.LittleEndian.PutUint32(dst[4:], n2)
 }
 
+// lookup16 returns row[x] for x < 16 by reading all 16 entries, so that neither
+// the branches nor the memory accesses depend on x.
+func lookup16(row *[16]byte, x uint32) uint32 {
+	var r uint32
+	for i, v := range row {
+		r |= uint32(v) & -uint32(subtle.ConstantTimeEq(int32(i), int32(x))) //nolint:gosec // G115: i and x are below 16
+	}
+	return r
+}
+
 // round is the GOST round function: add the subkey, substitute each nibble, rotate left by 11.
 func (c *gostCipher) round(n, subkey uint32) uint32 {
 	sum := n + subkey
 	var out uint32
 	for i := range 8 {
-		out |= uint32(c.sbox[i][sum>>(4*i)&0xf]) << (4 * i)
+		out |= lookup16(&c.sbox[i], sum>>(4*i)&0xf) << (4 * i)
 	}
 	return bits.RotateLeft32(out, 11)
 }

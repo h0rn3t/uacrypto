@@ -4,24 +4,32 @@
 // multiplication in GF(2^8).
 package spn
 
+import "crypto/subtle"
+
 // MDS is the first row of the circulant MixColumns matrix.
 var MDS = [8]byte{0x01, 0x01, 0x05, 0x01, 0x08, 0x06, 0x07, 0x04}
 
-// Mul multiplies a and b in GF(2^8) modulo x^8+x^4+x^3+x^2+1 (0x11d).
+// Mul multiplies a and b in GF(2^8) modulo x^8+x^4+x^3+x^2+1 (0x11d). It
+// runs eight iterations whatever the operands are, and selects with masks
+// instead of branches.
 func Mul(a, b byte) byte {
 	var p byte
-	for b != 0 {
-		if b&1 != 0 {
-			p ^= a
-		}
-		hi := a & 0x80
-		a <<= 1
-		if hi != 0 {
-			a ^= 0x1d
-		}
+	for range 8 {
+		p ^= a & -(b & 1)
+		a = a<<1 ^ 0x1d&-(a>>7)
 		b >>= 1
 	}
 	return p
+}
+
+// Lookup returns table[x] by reading all 256 entries, so that neither the
+// branches nor the memory accesses depend on x.
+func Lookup(table *[256]byte, x byte) byte {
+	var r byte
+	for i, v := range table {
+		r |= v & -byte(subtle.ConstantTimeByteEq(byte(i), x)) //nolint:gosec // G115: i < 256
+	}
+	return r
 }
 
 // MixColumn multiplies the column col by the circulant matrix whose first

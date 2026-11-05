@@ -177,7 +177,7 @@ func mixRound(s [][8]byte) {
 			shift = 11
 		}
 		for c := range n {
-			shifted[(c+shift)%n][r] = spn.Sbox[r%4][s[c][r]]
+			shifted[(c+shift)%n][r] = spn.Lookup(&spn.Sbox[r%4], s[c][r])
 		}
 	}
 	for c := range n {

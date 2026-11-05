@@ -118,3 +118,13 @@ func TestPackDKE(t *testing.T) {
 		t.Errorf("UnpackDKE(PackDKE(s)) = %x, %v, want s", back, err)
 	}
 }
+
+func TestLookup16(t *testing.T) {
+	for i, row := range DKE1() {
+		for x := range uint32(16) {
+			if got, want := lookup16(&row, x), uint32(row[x]); got != want {
+				t.Fatalf("lookup16(DKE1 row %d, %d) = %d, want %d", i, x, got, want)
+			}
+		}
+	}
+}
