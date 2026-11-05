@@ -11,3 +11,6 @@ parity/java/*.jar
 /.claude/
 /.mcp.json
 CLAUDE.md
+
+# superpowers specs and plans — local working notes
+/docs/superpowers/
