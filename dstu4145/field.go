@@ -14,7 +14,9 @@ type felem [7]uint64
 
 // field is GF(2^m) with the reduction polynomial x^m + Σ x^k + 1. add, mul,
 // sqr and inv neither branch nor index on element values: their loops depend
-// only on m and ks, which are public.
+// only on m and ks, which are public. All operations expect reduced
+// inputs (degree below m): reduce folds only a product of such elements, so an
+// unreduced operand to mul or sqr leaves a result at or above 2^m.
 type field struct {
 	m  int
 	ks []int // middle exponents, ascending

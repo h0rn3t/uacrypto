@@ -2,8 +2,26 @@ package kalyna
 
 import (
 	"math"
+	"slices"
 	"testing"
 )
+
+func TestIncrementLE(t *testing.T) {
+	t.Parallel()
+	tests := []struct{ in, want []byte }{
+		{[]byte{0x00, 0x00}, []byte{0x01, 0x00}},
+		{[]byte{0xff, 0x00}, []byte{0x00, 0x01}},
+		{[]byte{0xff, 0x01}, []byte{0x00, 0x02}},
+		{[]byte{0xff, 0xff, 0xff}, []byte{0x00, 0x00, 0x00}},
+	}
+	for _, tt := range tests {
+		got := slices.Clone(tt.in)
+		incrementLE(got)
+		if !slices.Equal(got, tt.want) {
+			t.Errorf("incrementLE(%x) = %x, want %x", tt.in, got, tt.want)
+		}
+	}
+}
 
 func TestModeLengthBounds(t *testing.T) {
 	t.Parallel()

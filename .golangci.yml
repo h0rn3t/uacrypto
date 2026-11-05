@@ -3,6 +3,9 @@ run:
   # Exclusion paths are relative to go.mod, not to this file: the gate
   # passes --config from the installed skill directory.
   relative-path-mode: gomod
+  # lint the timing tests behind the ctcheck tag too
+  build-tags:
+    - ctcheck
 linters:
   enable:
     # Minimum recommended

@@ -20,3 +20,25 @@ func TestWelchKnownValues(t *testing.T) {
 		t.Errorf("welch.t() = %.4f, want -1.897", got)
 	}
 }
+
+func TestMaxAbsTFailsClosed(t *testing.T) {
+	var ok, sparse welch
+	for _, x := range []float64{1, 2, 3} {
+		ok.push(x, 0)
+		ok.push(x+10, 1)
+	}
+	sparse.push(1, 0) // one sample in class 0 and none in class 1: t is NaN
+	tests := []struct {
+		name  string
+		tests []welch
+		want  float64
+	}{
+		{"finite", []welch{ok}, math.Abs(ok.t())},
+		{"NaN test", []welch{ok, sparse}, math.Inf(1)},
+	}
+	for _, tt := range tests {
+		if got := maxAbsT(tt.tests); got != tt.want {
+			t.Errorf("maxAbsT(%s) = %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}

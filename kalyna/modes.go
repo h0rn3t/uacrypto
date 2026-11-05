@@ -56,11 +56,13 @@ func xorGamma(block cipher.Block, counter, dst, src []byte) {
 	clear(gamma)
 }
 
+// incrementLE adds one to the little-endian counter, wrapping to zero. It
+// walks every byte, so its time does not depend on where the carry stops.
 func incrementLE(counter []byte) {
+	carry := uint16(1)
 	for i := range counter {
-		counter[i]++
-		if counter[i] != 0 {
-			return
-		}
+		sum := uint16(counter[i]) + carry
+		counter[i] = byte(sum & 0xff)
+		carry = sum >> 8
 	}
 }

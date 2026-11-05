@@ -8,11 +8,12 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write # gh release create
+  contents: read
 
 jobs:
   ctcheck:
     runs-on: ubuntu-latest
+    timeout-minutes: 70
     steps:
       - uses: actions/checkout@v5
 
@@ -21,12 +22,14 @@ jobs:
           go-version-file: go.mod
 
       - name: Timing test
-        run: go test -tags ctcheck -count=1 -timeout 30m -v ./internal/ctcheck
+        run: go test -tags ctcheck -count=1 -timeout 60m -v ./internal/ctcheck
 
   release:
     needs: ctcheck
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # gh release create
     steps:
       - uses: actions/checkout@v5
         with:

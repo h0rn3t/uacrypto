@@ -22,10 +22,11 @@ jobs:
       - name: Test
         run: |
           go vet ./...
+          go vet -tags ctcheck ./internal/ctcheck
           go test -race ./...
 
       - name: Test on 32-bit Go
-        run: GOARCH=386 CGO_ENABLED=0 go test ./kalyna ./kupyna ./gost28147 ./internal/spn ./dstu4145
+        run: GOARCH=386 CGO_ENABLED=0 go test ./kalyna ./kupyna ./gost28147 ./gost34311 ./internal/spn ./dstu4145
 
       # apart from -race: both together take pki past the 10-minute test timeout
       - name: Coverage

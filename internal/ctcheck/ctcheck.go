@@ -39,8 +39,8 @@ type Result struct {
 // with a class, 0 or 1, chosen at random per sample. One sample is the time
 // of Batch calls of op on its input, with Batch calibrated so that a batch on
 // the input of one class or the other lasts at least 2 µs. The first 1000
-// samples are warm-up;
-// samples must exceed that.
+// samples are warm-up; samples must exceed that. If a t-test cannot be
+// computed, Result.T is +Inf.
 func Run[T any](samples int, input func(class int) T, op func(T)) Result {
 	if samples <= warmup {
 		panic("ctcheck: samples must exceed the warm-up of 1000")
@@ -76,13 +76,22 @@ func Run[T any](samples int, input func(class int) T, op func(T)) Result {
 		}
 	}
 
+	return Result{T: maxAbsT(tests), Samples: samples - warmup, Batch: batch}
+}
+
+// maxAbsT is the largest |t| over the tests. A test with no value (NaN: fewer
+// than two samples in a class) makes it +Inf: the comparison "t > max" is
+// false for NaN, so skipping it would let a broken measurement pass.
+func maxAbsT(tests []welch) float64 {
 	var maxT float64
 	for _, w := range tests {
-		if t := math.Abs(w.t()); t > maxT {
-			maxT = t
+		t := math.Abs(w.t())
+		if math.IsNaN(t) {
+			return math.Inf(1)
 		}
+		maxT = max(maxT, t)
 	}
-	return Result{T: maxT, Samples: samples - warmup, Batch: batch}
+	return maxT
 }
 
 // calibrate doubles the batch from 1 until a batch on the input of either

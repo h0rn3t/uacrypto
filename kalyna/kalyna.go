@@ -10,8 +10,12 @@
 // DSTU counter. GCM and CCM accept a partial final block by zero-padding it
 // inside the authentication; DSTU 7624 publishes no vector for that case.
 // Reusing a GCM or CCM nonce under one key is catastrophic and is not
-// detected. Encryption, decryption and key expansion run in constant time on
-// 64-bit platforms.
+// detected.
+//
+// The block cipher (encryption, decryption and key expansion) runs in constant
+// time on 64-bit platforms. The modes (CMAC, GCM, CCM, XTS and key wrapping)
+// take no secret-dependent branches or table lookups beyond the cipher, but
+// the timing test covers only the block cipher.
 package kalyna
 
 import (
