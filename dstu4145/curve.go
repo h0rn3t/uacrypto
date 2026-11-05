@@ -12,11 +12,12 @@ import (
 // over GF(2^m) with a base point of prime order n. Curves are immutable and
 // safe for concurrent use.
 type Curve struct {
-	f field
-	a uint64 // 0 or 1
-	b felem
-	n *big.Int
-	g point
+	f   field
+	a   uint64 // 0 or 1
+	b   felem
+	n   *big.Int
+	ord order // n for the constant-time scalar arithmetic
+	g   point
 }
 
 // point is an affine point, or the point at infinity when inf is set.
@@ -30,7 +31,8 @@ type point struct {
 var namedCurves = sync.OnceValue(func() [10]*Curve {
 	curve := func(f field, a uint64, b, n, gx, gy string) *Curve {
 		g := point{x: feFromBig(hexInt(gx)), y: feFromBig(hexInt(gy))}
-		return &Curve{f: f, a: a, b: feFromBig(hexInt(b)), n: hexInt(n), g: g}
+		nInt := hexInt(n)
+		return &Curve{f: f, a: a, b: feFromBig(hexInt(b)), n: nInt, ord: newOrder(nInt), g: g}
 	}
 	return [10]*Curve{
 		curve(newField(163, 3, 6, 7), 1, "5FF6108462A2DC8210AB403925E638A19C1455D21", "400000000000000000002BEC12BE2262D39BCF14D",

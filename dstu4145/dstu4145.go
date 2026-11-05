@@ -13,7 +13,6 @@
 package dstu4145
 
 import (
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -30,7 +29,7 @@ type PublicKey struct {
 // A PrivateKey is a DSTU 4145 private key d with its public key.
 type PrivateKey struct {
 	pub PublicKey
-	d   *big.Int
+	d   scalar
 }
 
 // GenerateKey returns a new key on curve c with d drawn uniformly from
@@ -46,24 +45,15 @@ func GenerateKey(c *Curve, random io.Reader) (*PrivateKey, error) {
 // NewPrivateKey returns the key on curve c with the big-endian scalar d,
 // which must be in [1, n-1].
 func NewPrivateKey(c *Curve, d []byte) (*PrivateKey, error) {
-	k := new(big.Int).SetBytes(d)
-	if k.Sign() == 0 || k.Cmp(c.n) >= 0 {
+	k, ok := c.ord.fromBytes(d)
+	if !ok {
 		return nil, errors.New("dstu4145: private key out of range [1, n-1]")
 	}
 	return newPrivateKey(c, k), nil
 }
 
-func newPrivateKey(c *Curve, d *big.Int) *PrivateKey {
-	return &PrivateKey{pub: PublicKey{curve: c, q: c.neg(c.scalarMult(c.g, d))}, d: d}
-}
-
-// randomScalar draws an integer uniformly from [1, n-1].
-func randomScalar(c *Curve, random io.Reader) (*big.Int, error) {
-	k, err := rand.Int(random, new(big.Int).Sub(c.n, big.NewInt(1)))
-	if err != nil {
-		return nil, fmt.Errorf("dstu4145: read random: %w", err)
-	}
-	return k.Add(k, big.NewInt(1)), nil
+func newPrivateKey(c *Curve, d scalar) *PrivateKey {
+	return &PrivateKey{pub: PublicKey{curve: c, q: c.neg(c.scalarMult(c.g, d.big()))}, d: d}
 }
 
 // Curve returns the curve of k.
@@ -75,7 +65,7 @@ func (k *PrivateKey) Public() *PublicKey { return &k.pub }
 // Bytes returns d as a big-endian integer padded to the byte length of n,
 // the form NewPrivateKey accepts.
 func (k *PrivateKey) Bytes() []byte {
-	return k.d.FillBytes(make([]byte, (k.pub.curve.n.BitLen()+7)/8))
+	return k.pub.curve.ord.bytes(&k.d)
 }
 
 // Bytes returns the compressed point in the DSTU 4145 encoding: x as a
@@ -146,18 +136,18 @@ func Sign(random io.Reader, k *PrivateKey, hash []byte) (r, s *big.Int, err erro
 		if err != nil {
 			return nil, nil, err
 		}
-		fe := c.scalarMult(c.g, e).x
+		fe := c.scalarMult(c.g, e.big()).x
 		if fe.isZero() {
 			continue
 		}
-		r = truncate(c.f.mul(h, fe).big(), c.n.BitLen()-1)
+		r = truncate(c.f.mul(h, fe).big(), c.n.BitLen()-1) // below n, so a valid mulAdd operand
 		if r.Sign() == 0 {
 			continue
 		}
-		s = new(big.Int).Mul(r, k.d)
-		s.Add(s, e).Mod(s, c.n)
-		if s.Sign() != 0 {
-			return r, s, nil
+		rs := scalarFromBig(r)
+		ss := c.ord.mulAdd(&rs, &k.d, &e)
+		if !c.ord.isZero(&ss) {
+			return r, ss.big(), nil
 		}
 	}
 }
