@@ -1,4 +1,4 @@
-# Звірка uacrypto з Bouncy Castle (Java) і Rust-бібліотеками. Потрібні go, java/javac, cargo, curl.
+# Звірка uacrypto з Bouncy Castle (Java), Rust-бібліотеками і jkurwa (JS). Потрібні go, java/javac, cargo, bun, curl.
 #   make          — уся звірка; ненульовий код виходу, якщо хоч щось розійшлося
 #   make tsa      — CAdES-T з позначками часу справжнього TSA (мережа; TSA_URL змінює сервер)
 #   make czo      — перевірити підписи всіх ДСТУ-сертифікатів пакета ЦЗО (окремо: пакет оновлюється)
@@ -14,10 +14,11 @@ CZO_SHA256 := efc6a4ecf5ca10dd099335fbf2c1173d597110b4eb431cb89652e7b7369029c4
 OUT        := out
 JAVA       ?= java
 JAVAC      ?= javac
+BUN        ?= bun
 
 .PHONY: all cms tsa czo clean
-all: $(OUT)/cases.txt $(OUT)/bc_sigs.txt $(OUT)/rust_sigs.txt cms
-	cat $(OUT)/bc_sigs.txt $(OUT)/rust_sigs.txt > $(OUT)/foreign_sigs.txt
+all: $(OUT)/cases.txt $(OUT)/bc_sigs.txt $(OUT)/rust_sigs.txt $(OUT)/jkurwa_sigs.txt cms
+	cat $(OUT)/bc_sigs.txt $(OUT)/rust_sigs.txt $(OUT)/jkurwa_sigs.txt > $(OUT)/foreign_sigs.txt
 	go run . verify $(OUT)/foreign_sigs.txt
 
 # CMS: ua-cryptography-pki випускає ключі й сертифікати та підписує, uacrypto перевіряє і підписує тими самими
@@ -44,6 +45,14 @@ $(OUT)/bc_sigs.txt: $(OUT)/cases.txt $(BC_JAR) java/Check.java
 $(OUT)/rust_sigs.txt: $(OUT)/cases.txt rust/src/main.rs rust/Cargo.toml rust/Cargo.lock
 	cargo run --release --locked -q --manifest-path rust/Cargo.toml -- $(OUT)/cases.txt $@
 
+# jkurwa і gost89 ставляться точно за bun.lock
+jkurwa/node_modules: jkurwa/package.json jkurwa/bun.lock
+	cd jkurwa && $(BUN) install --frozen-lockfile
+	touch $@
+
+$(OUT)/jkurwa_sigs.txt: $(OUT)/cases.txt jkurwa/check.mjs jkurwa/node_modules
+	$(BUN) jkurwa/check.mjs $(OUT)/cases.txt $@
+
 tsa: cms $(OUT)/CACertificates.p7b
 	cargo run --release --locked -q --manifest-path rust/Cargo.toml -- cades-t $(TSA_URL) $(OUT)/rust_t.txt
 	go run . tsa $(TSA_URL) $(OUT)/rust_cms.txt $(OUT)/rust_t.txt $(OUT)/go_t.txt
@@ -59,4 +68,4 @@ czo: $(OUT)/CACertificates.p7b
 	go run . czo $<
 
 clean:
-	rm -rf $(OUT) rust/target $(BC_JAR)
+	rm -rf $(OUT) rust/target jkurwa/node_modules $(BC_JAR)

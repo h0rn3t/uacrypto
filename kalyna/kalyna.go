@@ -1,10 +1,16 @@
-// Package kalyna implements the Kalyna block cipher defined in
-// DSTU 7624:2014 with 128-, 256- and 512-bit blocks.
+// Package kalyna implements the Kalyna block cipher of DSTU 7624:2014
+// (128-, 256- and 512-bit blocks) and the modes CMAC, GCM, CCM, XTS and key
+// wrapping based on Bouncy Castle 1.86 (DSTU7624Mac,
+// KGCMBlockCipher, KCCMBlockCipher, KXTSBlockCipher, DSTU7624WrapEngine).
+// GCM additionally authenticates the nonce as a prefix of the additional data;
+// its tags differ from unmodified DSTU 7624 GCM. GCM and CCM require a nonce
+// of exactly one block.
 //
-// The implementation is a port of DSTU7624Engine from Bouncy Castle and
-// produces the same output. Only the block transform is provided; use the
-// modes of crypto/cipher (CTR, CBC, ...) on top of it. It is not
-// constant-time.
+// crypto/cipher CTR, CBC, CFB and OFB are a different construction from the
+// DSTU counter. GCM and CCM accept a partial final block by zero-padding it
+// inside the authentication; DSTU 7624 publishes no vector for that case.
+// Reusing a GCM or CCM nonce under one key is catastrophic and is not
+// detected. Nothing in this package is constant-time.
 package kalyna
 
 import (

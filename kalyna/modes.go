@@ -1,0 +1,66 @@
+package kalyna
+
+import (
+	"crypto/cipher"
+	"crypto/subtle"
+	"errors"
+	"fmt"
+	"math"
+)
+
+// ErrAuthentication is returned when a GCM tag, a CCM tag or a wrapped-key
+// checksum does not match. Open and Unwrap then return a nil message. Open
+// also returns it when the ciphertext is shorter than the tag.
+var ErrAuthentication = errors.New("kalyna: authentication failed")
+
+func blockBytes(block cipher.Block) (int, error) {
+	if block == nil {
+		return 0, errors.New("kalyna: nil block cipher")
+	}
+	n := block.BlockSize()
+	if n != 16 && n != 32 && n != 64 {
+		return 0, fmt.Errorf("kalyna: block size %d, want 16, 32 or 64", n)
+	}
+	return n, nil
+}
+
+func nonceLen(n, blockSize int) error {
+	if n != blockSize {
+		return fmt.Errorf("kalyna: nonce length %d, want %d", n, blockSize)
+	}
+	return nil
+}
+
+func fitsUint32(n int) error {
+	if n < 0 || uint64(n) > math.MaxUint32 {
+		return errors.New("kalyna: input longer than 2^32-1 bytes")
+	}
+	return nil
+}
+
+func len32(n int) uint32 {
+	return uint32(n) //nolint:gosec // G115: fitsUint32 rejected a longer input
+}
+
+// xorGamma writes src XORed with the DSTU 7624 counter keystream to dst.
+// counter is incremented, little-endian, before each block. dst and src may
+// be the same slice; a short final block uses the leading gamma bytes.
+func xorGamma(block cipher.Block, counter, dst, src []byte) {
+	gamma := make([]byte, len(counter))
+	for off := 0; off < len(src); off += len(counter) {
+		incrementLE(counter)
+		block.Encrypt(gamma, counter)
+		end := min(off+len(counter), len(src))
+		subtle.XORBytes(dst[off:end], src[off:end], gamma)
+	}
+	clear(gamma)
+}
+
+func incrementLE(counter []byte) {
+	for i := range counter {
+		counter[i]++
+		if counter[i] != 0 {
+			return
+		}
+	}
+}

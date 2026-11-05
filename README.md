@@ -21,7 +21,7 @@
 | [`dstu4145`](https://pkg.go.dev/github.com/h0rn3t/uacrypto/dstu4145) | ДСТУ 4145-2002 — цифровий підпис на еліптичних кривих | усі 10 іменованих кривих (зокрема M257), генерація ключів, підпис, перевірка, стиснене кодування відкритого ключа, підпис `r‖s` у форматі ІІТ |
 | [`gost34311`](https://pkg.go.dev/github.com/h0rn3t/uacrypto/gost34311) | ГОСТ 34.311-95 — функція гешування | `hash.Hash`, ДКЕ №1 за замовчуванням або власний S-блок |
 | [`kupyna`](https://pkg.go.dev/github.com/h0rn3t/uacrypto/kupyna) | ДСТУ 7564:2014 «Купина» — функція гешування | `hash.Hash` на 256, 384 і 512 біт |
-| [`kalyna`](https://pkg.go.dev/github.com/h0rn3t/uacrypto/kalyna) | ДСТУ 7624:2014 «Калина» — блоковий шифр | `cipher.Block` з блоком 128, 256 і 512 біт і всіма ключами стандарту |
+| [`kalyna`](https://pkg.go.dev/github.com/h0rn3t/uacrypto/kalyna) | ДСТУ 7624:2014 «Калина» — блоковий шифр | `cipher.Block` з блоком 128, 256 і 512 біт; CMAC, GCM, CCM, XTS і обгортання ключів |
 | [`pki`](https://pkg.go.dev/github.com/h0rn3t/uacrypto/pki) | X.509 і CMS з ДСТУ 4145 | ключ ДСТУ 4145 із сертифіката (явні параметри чи OID кривої, ДКЕ, le/be), РНОКПП і ЄДРПОУ власника, перевірка підпису сертифіката (ГОСТ 34.311, Купина-256, Купина-512), створення й перевірка CMS SignedData: файлів `.p7s` (CAdES-BES, CAdES-T і CAdES-X Long) і позначок часу RFC 3161, клієнт TSP, клієнт OCSP і перевірка відповідей OCSP; для ЦСК — випуск сертифікатів з іменами й розширеннями, як у ЦСК, PKCS#10, ключі PKCS#8 у форматі BC, відповіді OCSP і позначки часу, пакети `.p7b` |
 | [`gost28147`](https://pkg.go.dev/github.com/h0rn3t/uacrypto/gost28147) | ГОСТ 28147-89 — блоковий шифр | `cipher.Block`, ДКЕ №1, розпакування й пакування ДКЕ параметрів ключа |
 
@@ -286,12 +286,18 @@ fmt.Printf("%x\n", h.Sum(nil))
 
 ```go
 block, err := kalyna.NewCipher256(key) // блок 32 байти, ключ 32 або 64 байти
-stream := cipher.NewCTR(block, iv)     // режими — з crypto/cipher
-stream.XORKeyStream(dst, src)
+gcm, err := kalyna.NewGCM(block, 16)   // тег 16 байтів
+sealed, err := gcm.Seal(nonce, plaintext, nil)
+opened, err := gcm.Open(nonce, sealed, nil)
 ```
 
-`NewCipher128` бере ключ 16 або 32 байти, `NewCipher512` — 64 байти. Пакет дає лише блокове
-перетворення; режими ДСТУ 7624 (CMAC, GCM, CCM, XTS, обгортання ключів) поки не реалізовані.
+`NewCipher128` бере ключ 16 або 32 байти, `NewCipher512` — 64 байти. `CMAC`, `NewCCM`,
+`NewXTS`, `Wrap` і `Unwrap` реалізують режими ДСТУ 7624, як їх рахує Bouncy Castle 1.86.
+`NewGCM` додатково автентифікує нонс як перший блок AAD: для сумісності з BC
+`KGCMBlockCipher` передавайте йому `nonce || additionalData` як AAD. Теги відрізняються
+від звичайного ДСТУ GCM; попередні шифротексти без автентифікації нонса не приймаються.
+Нонс GCM і CCM має бути завдовжки рівно один блок. Повторний нонс із тим самим ключем
+неприпустимий. `crypto/cipher` CTR, CBC, CFB і OFB — інша схема, не лічильник ДСТУ.
 
 ГОСТ 34.311 з нестандартним ДКЕ, наприклад з параметрів ключа:
 
@@ -338,7 +344,7 @@ h, err := gost34311.NewWithSbox(sbox)
 | `pki` | 84,5 % |
 
 **Звірка з іншими реалізаціями** ([`parity/`](parity), `cd parity && make`). Одні й ті самі
-відтворювані випадкові дані рахують uacrypto та незалежні бібліотеки. Даних такий обсяг:
+відтворювані випадкові дані рахують uacrypto та незалежні бібліотеки на Java, Rust і JavaScript. Даних такий обсяг:
 
 - 316 повідомлень завдовжки 0–4096 байтів, зокрема на межах блоків 32, 64 і 128;
 - 300 ключів і блоків ГОСТ 28147;
@@ -359,6 +365,7 @@ h, err := gost34311.NewWithSbox(sbox)
 | [RustCrypto `kupyna`](https://crates.io/crates/kupyna) 0.1.0 (Rust) | — | ✅ 948/948 | — | — | — | — |
 | [`ua-cryptography-pki`](https://crates.io/crates/ua-cryptography-pki) 0.1.6 (Rust): CMS | — | — | — | — | ✅ 28/28 CMS-підписів uacrypto | ✅ 28/28 сертифікатів і 28/28 CMS-підписів |
 | [`structured-dstu4145`](https://crates.io/crates/structured-dstu4145) 0.20.2 (Rust) | ✅ 316/316 | ✅ 948/948 | — | — | ✅ 100/100 ³ | — ⁴ |
+| [`jkurwa`](https://github.com/dstucrypt/jkurwa) 1.22.9 і `gost89` 0.1.12 (JS) | ✅ 316/316 | — | ✅ 300/300 | — | ✅ 81/81 ⁵ | ✅ 27/27 ⁵ |
 
 ¹ шифрування й розшифрування.
 ² `ua-cryptography-dstu4145` іде буквою стандарту: геш подається старшим байтом уперед,
@@ -366,6 +373,8 @@ h, err := gost34311.NewWithSbox(sbox)
 і кодують підпис як `r‖s` little-endian. Математика збігається, а формати звірка перетворює.
 ³ перевірка підпису у форматі ІІТ `r‖s` little-endian, закодованого `MarshalSignature`, на всіх 10 кривих.
 ⁴ крейт лише перевіряє підписи.
+⁵ `jkurwa` має лише криві 191, 257 і 431 біт; нульовий геш (ДСТУ 4145 замінює його на 1) вона
+не підписує й відхиляє його правильний підпис, тому ці випадки не звіряються.
 
 `make czo` перевіряє кожен сертифікат із публічного пакета ЦСК
 [ЦЗО](https://czo.gov.ua/download/certificates/CACertificates.p7b) ключем його видавця: з 1003
@@ -394,7 +403,7 @@ h, err := gost34311.NewWithSbox(sbox)
 - [x] CMS у BER
 - [x] Кодування підпису `r || s` як частина API
 - [x] ДСТУ 7624:2014 «Калина» (блоковий шифр)
-- [ ] Режими «Калини» з ДСТУ 7624: CMAC, GCM, CCM, XTS, обгортання ключів
+- [x] Режими «Калини» з ДСТУ 7624: CMAC, GCM, CCM, XTS, обгортання ключів
 - [ ] Реалізація за сталий час
 
 ## Ліцензія

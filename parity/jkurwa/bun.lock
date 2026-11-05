@@ -1,0 +1,39 @@
+{
+  "lockfileVersion": 2,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "dependencies": {
+        "gost89": "0.1.12",
+        "jkurwa": "1.22.9",
+      },
+    },
+  },
+  "packages": {
+    "asn1.js": ["asn1.js@github:muromec/asn1.js#7ca2c33", { "dependencies": { "bn.js": "^4.0.0", "inherits": "^2.0.1", "minimalistic-assert": "^1.0.0", "safer-buffer": "^2.1.0" } }, "muromec-asn1.js-7ca2c33", "sha512-GNeGAhmWi7BritwaOyZveD4TiF8FWRiZqMD+J5pb+7MW6Scw4WF0v9xf2YWRCaw4Yr0axGnt3oOM1ycO/k5WOg=="],
+
+    "base64-js": ["base64-js@1.5.1", "", {}, "sha512-AKpaYlHn8t4SVbOHCy+b5+KKgvR4vrsD8vbvrbiQJps7fKDTkjkDry6ji0rUJjC0kzbNePLwzxq8iypo41qeWA=="],
+
+    "bn.js": ["bn.js@4.12.5", "", {}, "sha512-3aRg6/JxfffFD+OlOjOFR3Vo79l39ooBTFucxx+MT3dhCtzn3EmiUPQo+6/OZuI2jbXi3YKgmiTFBgChQMwIRQ=="],
+
+    "buffer": ["buffer@6.0.3", "", { "dependencies": { "base64-js": "^1.3.1", "ieee754": "^1.2.1" } }, "sha512-FTiCpNxtwiZZHEZbcbTIcZjERVICn9yq/pDFkTl95/AxzD1naBctN7YO68riM/gLSDY7sdrMby8hofADYuuqOA=="],
+
+    "gost89": ["gost89@0.1.12", "", { "dependencies": { "buffer": ">= 3.0" } }, "sha512-4dzP3PaAkwCV6L7abvUGidDsbxCB2qlxz54E+UcNl65s8wNTvYI9Q6zDUm3MK28x4ptPdu5Cwo8SpcwfzPONsg=="],
+
+    "ieee754": ["ieee754@1.2.1", "", {}, "sha512-dcyqhDvX1C46lXZcVqCpK+FtMRQVdIMN6/Df5js2zouUsqG7I6sFxitIC+7KYK29KdXOLHdu9zL4sFnoVQnqaA=="],
+
+    "inherits": ["inherits@2.0.4", "", {}, "sha512-k/vGaX4/Yla3WzyMCvTQOXYeIHvqOKtnqBduzTHpzpQZzAskKMhZ2K+EnBiSM9zGSoIFeMpXKxa4dYeZIQqewQ=="],
+
+    "jksreader": ["jksreader@1.0.0", "", { "dependencies": { "js-sha1": "^0.6.0" } }, "sha512-fSZ64WyfAXHoaE3J5opHh7DSCL3Kfy3CzRkLX2Kz9kmHUa8DrnrQKPhBgi2mapGu7SUwuzgCw/xPtGzZj4pWgQ=="],
+
+    "jkurwa": ["jkurwa@1.22.9", "", { "dependencies": { "asn1.js": "github:muromec/asn1.js", "bn.js": ">= 0.14", "buffer": ">= 3.0", "jksreader": "^1.0.0", "js-lzma": "0.x" } }, "sha512-kT0PlauLQYse+eHh4/o1mHjEuW2wtv32Rq9LspNDLCqozdzY86SQmUdLY2bef/L3Qj8qd+czBZNTa1UJ/lQGOQ=="],
+
+    "js-lzma": ["js-lzma@0.1.0", "", {}, "sha512-haRneXeWG1dWHEotKoAPNRhYrglqdLtdfZ2TSpVO9AfHdsszdHkW6Okb/5zG+1RlZe9gJOtb6yKY/FakHG5tOw=="],
+
+    "js-sha1": ["js-sha1@0.6.0", "", {}, "sha512-01gwBFreYydzmU9BmZxpVk6svJJHrVxEN3IOiGl6VO93bVKYETJ0sIth6DASI6mIFdt7NmfX9UiByRzsYHGU9w=="],
+
+    "minimalistic-assert": ["minimalistic-assert@1.0.1", "", {}, "sha512-UtJcAD4yEaGtjPezWuO9wC4nwUnVH/8/Im3yEHQP4b67cXlD/Qr9hdITCU1xDbSEXg2XKNaP8jsReV7vQd00/A=="],
+
+    "safer-buffer": ["safer-buffer@2.1.2", "", {}, "sha512-YZo3K82SD7Riyi0E1EQPojLz7kpepnSQI9IyPbHHg1XXXevb5dJI7tpyN2ADxGcQbHG7vcyRHk0cbwqcQriUtg=="],
+  }
+}

@@ -1,6 +1,7 @@
 coverage.out
 parity/out/
 parity/rust/target/
+parity/jkurwa/node_modules/
 parity/java/*.jar
 
 # graft's local graph cache — regenerable, not committed (run `graft build`).

@@ -24,6 +24,9 @@ jobs:
           go vet ./...
           go test -race ./...
 
+      - name: Test Kalyna on 32-bit Go
+        run: GOARCH=386 CGO_ENABLED=0 go test ./kalyna
+
       # apart from -race: both together take pki past the 10-minute test timeout
       - name: Coverage
         # -coverpkg counts internal/spn, which kalyna and kupyna test

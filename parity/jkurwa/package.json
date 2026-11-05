@@ -1,0 +1,8 @@
+{
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "gost89": "0.1.12",
+    "jkurwa": "1.22.9"
+  }
+}

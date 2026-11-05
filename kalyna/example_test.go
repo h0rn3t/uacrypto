@@ -26,3 +26,30 @@ func Example() {
 	fmt.Println(string(plaintext))
 	// Output: повідомлення
 }
+
+func ExampleNewGCM() {
+	key := make([]byte, 32)
+	rand.Read(key)
+	block, err := kalyna.NewCipher256(key)
+	if err != nil {
+		panic(err)
+	}
+	aead, err := kalyna.NewGCM(block, 16)
+	if err != nil {
+		panic(err)
+	}
+	nonce := make([]byte, block.BlockSize())
+	rand.Read(nonce)
+	msg := []byte("повідомлення")
+
+	sealed, err := aead.Seal(nonce, msg, nil)
+	if err != nil {
+		panic(err)
+	}
+	opened, err := aead.Open(nonce, sealed, nil)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(string(opened))
+	// Output: повідомлення
+}
