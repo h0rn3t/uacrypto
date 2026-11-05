@@ -1,7 +1,8 @@
 // Package spn holds the primitives shared by the Kalyna block cipher
 // (DSTU 7624:2014) and the Kupyna hash function (DSTU 7564:2014), which is
 // built on the Kalyna round: the S-boxes, the MixColumns matrix and
-// multiplication in GF(2^8).
+// multiplication in GF(2^8). Lookup and Mul take no secret-dependent branches
+// or memory accesses, so the callers run in constant time.
 package spn
 
 import "crypto/subtle"

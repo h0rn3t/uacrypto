@@ -7,9 +7,16 @@
 // values (r, s); MarshalSignature and ParseSignature convert them to and from
 // r||s little-endian, the form of certificates, OCSP and CMS.
 //
-// The implementation uses math/big and is not constant-time: timing may leak
-// private keys. It is meant for testing and interoperability, not for
-// production keys.
+// GenerateKey, NewPrivateKey, PrivateKey.Bytes and Sign run in constant time
+// with respect to the private key and the per-signature secret on 64-bit
+// platforms: the field arithmetic uses fixed 64-bit limbs, secret scalars go
+// through a Montgomery ladder, and arithmetic modulo n has no secret-dependent
+// branches or memory accesses. This is checked by a statistical timing test
+// (internal/ctcheck) on linux/amd64; 32-bit builds are correct but make no
+// such claim. Verify, ParsePublicKey, PublicKey.Bytes and CurveFromParams
+// handle public data only and are not constant-time. Power and fault attacks
+// and zeroization of key material are out of scope, and the package has not
+// been audited.
 package dstu4145
 
 import (

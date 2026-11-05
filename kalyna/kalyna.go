@@ -10,7 +10,8 @@
 // DSTU counter. GCM and CCM accept a partial final block by zero-padding it
 // inside the authentication; DSTU 7624 publishes no vector for that case.
 // Reusing a GCM or CCM nonce under one key is catastrophic and is not
-// detected. Nothing in this package is constant-time.
+// detected. Encryption, decryption and key expansion run in constant time on
+// 64-bit platforms.
 package kalyna
 
 import (
