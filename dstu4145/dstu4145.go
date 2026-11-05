@@ -81,9 +81,9 @@ func (k *PrivateKey) Bytes() []byte {
 // Bytes returns the compressed point in the DSTU 4145 encoding: x as a
 // big-endian field element whose lowest bit is replaced by Tr(y/x).
 func (k *PublicKey) Bytes() []byte {
-	f := k.curve.f
-	out := k.q.x.FillBytes(make([]byte, (f.m+7)/8))
-	if k.q.x.Sign() == 0 {
+	f := &k.curve.f
+	out := k.q.x.big().FillBytes(make([]byte, (f.m+7)/8))
+	if k.q.x.isZero() {
 		return out
 	}
 	out[len(out)-1] &^= 1
@@ -97,38 +97,39 @@ func (k *PublicKey) Bytes() []byte {
 // PublicKey.Bytes). It fails unless the point lies on curve c in the subgroup
 // of order n.
 func ParsePublicKey(c *Curve, data []byte) (*PublicKey, error) {
-	f := c.f
+	f := &c.f
 	if size := (f.m + 7) / 8; len(data) != size {
 		return nil, fmt.Errorf("dstu4145: public key is %d bytes, want %d", len(data), size)
 	}
-	x := new(big.Int).SetBytes(data)
-	if x.BitLen() > f.m {
+	xInt := new(big.Int).SetBytes(data)
+	if xInt.BitLen() > f.m {
 		return nil, errors.New("dstu4145: public key x is outside the field")
 	}
-	yTrace := uint(data[len(data)-1] & 1)
+	x := feFromBig(xInt)
+	yTrace := uint64(data[len(data)-1] & 1)
 	// the lowest bit carried Tr(y/x); restore it from Tr(x) = Tr(a), which holds for subgroup points
-	if f.trace(x) != c.a.Bit(0) {
-		x = f.addOne(x)
+	if f.trace(x) != c.a {
+		x = f.add(x, felem{1})
 	}
 
-	var y *big.Int
-	if x.Sign() == 0 {
+	var y felem
+	if x.isZero() {
 		y = f.sqrt(c.b)
 	} else {
 		xInv := f.inv(x)
-		beta := f.add(f.add(f.mul(f.sqr(xInv), c.b), c.a), x)
+		beta := f.add(f.add(f.mul(f.sqr(xInv), c.b), felem{c.a}), x)
 		z, ok := f.solveQuadratic(beta)
 		if !ok {
 			return nil, errors.New("dstu4145: public key is not a point on the curve")
 		}
 		if f.trace(z) != yTrace {
-			z = f.addOne(z)
+			z = f.add(z, felem{1})
 		}
 		y = f.mul(x, z)
 	}
 
-	q := point{x, y}
-	if !c.isOnCurve(q) || !c.scalarMult(q, c.n).isInfinity() {
+	q := point{x: x, y: y}
+	if !c.isOnCurve(q) || !c.scalarMult(q, c.n).inf {
 		return nil, errors.New("dstu4145: public key is not in the subgroup of order n")
 	}
 	return &PublicKey{curve: c, q: q}, nil
@@ -146,10 +147,10 @@ func Sign(random io.Reader, k *PrivateKey, hash []byte) (r, s *big.Int, err erro
 			return nil, nil, err
 		}
 		fe := c.scalarMult(c.g, e).x
-		if fe.Sign() == 0 {
+		if fe.isZero() {
 			continue
 		}
-		r = truncate(c.f.mul(h, fe), c.n.BitLen()-1)
+		r = truncate(c.f.mul(h, fe).big(), c.n.BitLen()-1)
 		if r.Sign() == 0 {
 			continue
 		}
@@ -168,10 +169,10 @@ func Verify(k *PublicKey, hash []byte, r, s *big.Int) bool {
 		return false
 	}
 	R := c.add(c.scalarMult(c.g, s), c.scalarMult(k.q, r))
-	if R.isInfinity() {
+	if R.inf {
 		return false
 	}
-	return truncate(c.f.mul(c.hashToField(hash), R.x), c.n.BitLen()-1).Cmp(r) == 0
+	return truncate(c.f.mul(c.hashToField(hash), R.x).big(), c.n.BitLen()-1).Cmp(r) == 0
 }
 
 // MarshalSignature encodes (r, s) from Sign on curve c as r||s, each a
@@ -204,14 +205,14 @@ func ParseSignature(sig []byte) (r, s *big.Int, err error) {
 
 // hashToField reads the hash as a little-endian integer truncated to m bits;
 // a zero result becomes 1.
-func (c *Curve) hashToField(hash []byte) *big.Int {
+func (c *Curve) hashToField(hash []byte) felem {
 	be := slices.Clone(hash)
 	slices.Reverse(be)
 	h := truncate(new(big.Int).SetBytes(be), c.f.m)
 	if h.Sign() == 0 {
 		h.SetInt64(1)
 	}
-	return h
+	return feFromBig(h)
 }
 
 // truncate keeps the low bits of x.

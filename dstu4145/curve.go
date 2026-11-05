@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"slices"
 	"sync"
 )
 
@@ -12,22 +13,24 @@ import (
 // safe for concurrent use.
 type Curve struct {
 	f field
-	a *big.Int // 0 or 1
-	b *big.Int
+	a uint64 // 0 or 1
+	b felem
 	n *big.Int
 	g point
 }
 
-// point is an affine point; x == nil is the point at infinity.
-type point struct{ x, y *big.Int }
-
-func (p point) isInfinity() bool { return p.x == nil }
+// point is an affine point, or the point at infinity when inf is set.
+type point struct {
+	x, y felem
+	inf  bool
+}
 
 // namedCurves are the curves of DSTU 4145-2002 Annex Б as Bouncy Castle
 // defines them in DSTU4145NamedCurves; the index is the last arc of the OID.
 var namedCurves = sync.OnceValue(func() [10]*Curve {
-	curve := func(f field, a int64, b, n, gx, gy string) *Curve {
-		return &Curve{f: f, a: big.NewInt(a), b: hexInt(b), n: hexInt(n), g: point{hexInt(gx), hexInt(gy)}}
+	curve := func(f field, a uint64, b, n, gx, gy string) *Curve {
+		g := point{x: feFromBig(hexInt(gx)), y: feFromBig(hexInt(gy))}
+		return &Curve{f: f, a: a, b: feFromBig(hexInt(b)), n: hexInt(n), g: g}
 	}
 	return [10]*Curve{
 		curve(newField(163, 3, 6, 7), 1, "5FF6108462A2DC8210AB403925E638A19C1455D21", "400000000000000000002BEC12BE2262D39BCF14D",
@@ -107,10 +110,10 @@ func CurveFromParams(p CurveParams) (*Curve, error) {
 	if p.B == nil || p.N == nil {
 		return nil, errors.New("dstu4145: curve parameters lack b or n")
 	}
-	poly := newField(p.M, p.K...).poly
+	ks := slices.Sorted(slices.Values(p.K))
 	g := new(big.Int).SetBytes(p.G)
 	for _, c := range namedCurves() {
-		if c.f.poly.Cmp(poly) == 0 && c.a.Cmp(big.NewInt(int64(p.A))) == 0 && c.b.Cmp(p.B) == 0 && c.n.Cmp(p.N) == 0 &&
+		if c.f.m == p.M && slices.Equal(c.f.ks, ks) && int(c.a&1) == p.A && c.b.big().Cmp(p.B) == 0 && c.n.Cmp(p.N) == 0 &&
 			new(big.Int).SetBytes((&PublicKey{curve: c, q: c.g}).Bytes()).Cmp(g) == 0 {
 			return c, nil
 		}
@@ -122,54 +125,54 @@ func CurveFromParams(p CurveParams) (*Curve, error) {
 func (c *Curve) Order() *big.Int { return new(big.Int).Set(c.n) }
 
 func (c *Curve) isOnCurve(p point) bool {
-	f := c.f
+	f := &c.f
 	lhs := f.add(f.sqr(p.y), f.mul(p.x, p.y))
 	x2 := f.sqr(p.x)
-	rhs := f.add(f.add(f.mul(x2, p.x), f.mul(c.a, x2)), c.b)
-	return lhs.Cmp(rhs) == 0
+	rhs := f.add(f.add(f.mul(x2, p.x), f.mul(felem{c.a}, x2)), c.b)
+	return lhs.equal(rhs)
 }
 
 func (c *Curve) neg(p point) point {
-	if p.isInfinity() {
+	if p.inf {
 		return p
 	}
-	return point{p.x, c.f.add(p.x, p.y)}
+	return point{x: p.x, y: c.f.add(p.x, p.y)}
 }
 
 func (c *Curve) double(p point) point {
-	if p.isInfinity() || p.x.Sign() == 0 {
-		return point{}
+	if p.inf || p.x.isZero() {
+		return point{inf: true}
 	}
-	f := c.f
+	f := &c.f
 	lambda := f.add(p.x, f.mul(p.y, f.inv(p.x)))
-	x := f.add(f.add(f.sqr(lambda), lambda), c.a)
-	y := f.add(f.mul(f.addOne(lambda), x), f.sqr(p.x))
-	return point{x, y}
+	x := f.add(f.add(f.sqr(lambda), lambda), felem{c.a})
+	y := f.add(f.mul(f.add(lambda, felem{1}), x), f.sqr(p.x))
+	return point{x: x, y: y}
 }
 
 func (c *Curve) add(p, q point) point {
 	switch {
-	case p.isInfinity():
+	case p.inf:
 		return q
-	case q.isInfinity():
+	case q.inf:
 		return p
-	case p.x.Cmp(q.x) == 0:
-		if p.y.Cmp(q.y) == 0 {
+	case p.x.equal(q.x):
+		if p.y.equal(q.y) {
 			return c.double(p)
 		}
-		return point{} // q = -p
+		return point{inf: true} // q = -p
 	}
-	f := c.f
+	f := &c.f
 	sx := f.add(p.x, q.x)
 	lambda := f.mul(f.add(p.y, q.y), f.inv(sx))
-	x := f.add(f.add(f.add(f.sqr(lambda), lambda), sx), c.a)
+	x := f.add(f.add(f.add(f.sqr(lambda), lambda), sx), felem{c.a})
 	y := f.add(f.add(f.mul(lambda, f.add(p.x, x)), x), p.y)
-	return point{x, y}
+	return point{x: x, y: y}
 }
 
 // scalarMult is left-to-right double-and-add. It is not constant-time.
 func (c *Curve) scalarMult(p point, k *big.Int) point {
-	r := point{}
+	r := point{inf: true}
 	for i := k.BitLen() - 1; i >= 0; i-- {
 		r = c.double(r)
 		if k.Bit(i) == 1 {
