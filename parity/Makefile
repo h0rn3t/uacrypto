@@ -2,6 +2,7 @@
 #   make          — уся звірка; ненульовий код виходу, якщо хоч щось розійшлося
 #   make tsa      — CAdES-T з позначками часу справжнього TSA (мережа; TSA_URL змінює сервер)
 #   make czo      — перевірити підписи всіх ДСТУ-сертифікатів пакета ЦЗО (окремо: пакет оновлюється)
+#   make iit IIT_LIB=…/euscp.dylib — звірка з бібліотекою ІІТ «Користувач ЦСК» (окремо: вона не постачається з репозиторієм)
 #   make clean    — прибрати згенероване
 
 BC_VERSION := 1.86
@@ -16,8 +17,8 @@ JAVA       ?= java
 JAVAC      ?= javac
 BUN        ?= bun
 
-.PHONY: all cms tsa czo clean
-all: $(OUT)/cases.txt $(OUT)/bc_sigs.txt $(OUT)/rust_sigs.txt $(OUT)/jkurwa_sigs.txt cms
+.PHONY: all cms envelope tsa czo iit clean
+all: $(OUT)/cases.txt $(OUT)/bc_sigs.txt $(OUT)/rust_sigs.txt $(OUT)/jkurwa_sigs.txt cms envelope
 	cat $(OUT)/bc_sigs.txt $(OUT)/rust_sigs.txt $(OUT)/jkurwa_sigs.txt > $(OUT)/foreign_sigs.txt
 	go run . verify $(OUT)/foreign_sigs.txt
 
@@ -50,6 +51,13 @@ jkurwa/node_modules: jkurwa/package.json jkurwa/bun.lock
 	cd jkurwa && $(BUN) install --frozen-lockfile
 	touch $@
 
+# Конверти (CMS EnvelopedData): jkurwa розкриває конверти uacrypto і шле вміст назад, uacrypto розкриває відповіді
+envelope: main.go envelope.go jkurwa/envelope.mjs jkurwa/node_modules $(wildcard ../*/*.go)
+	mkdir -p $(OUT)
+	go run . envelope-gen $(OUT)/go_env.txt
+	$(BUN) jkurwa/envelope.mjs $(OUT)/go_env.txt $(OUT)/jkurwa_env.txt
+	go run . envelope-check $(OUT)/go_env.txt $(OUT)/jkurwa_env.txt
+
 $(OUT)/jkurwa_sigs.txt: $(OUT)/cases.txt jkurwa/check.mjs jkurwa/node_modules
 	$(BUN) jkurwa/check.mjs $(OUT)/cases.txt $@
 
@@ -66,6 +74,14 @@ $(OUT)/CACertificates.p7b:
 
 czo: $(OUT)/CACertificates.p7b
 	go run . czo $<
+
+# Окремий модуль із cgo: основний модуль лишається без cgo. Бібліотека ІІТ поруч із своїми модулями
+# (osi, cspe, …), без ключів і без osplm.ini.
+iit:
+	@test -n "$(IIT_LIB)" || { echo "вкажіть IIT_LIB=/шлях/до/euscp.dylib (або euscp.so)"; exit 1; }
+	mkdir -p $(OUT)
+	cd iit && go build -o ../$(OUT)/iit .
+	$(OUT)/iit $(IIT_LIB)
 
 clean:
 	rm -rf $(OUT) rust/target jkurwa/node_modules $(BC_JAR)

@@ -2,7 +2,7 @@
 // DSTU 7564:2014 with 256-, 384- and 512-bit digests.
 //
 // The implementation is a port of DSTU7564Digest from Bouncy Castle and
-// produces the same digests.
+// produces the same digests. [NewMAC] is the MAC of DSTU 7564 with a key.
 package kupyna
 
 import (
@@ -106,12 +106,7 @@ func (d *digest) Sum(b []byte) []byte {
 // state ⊕ P(state). The digest is the last size bytes of the result.
 func (d *digest) finish() []byte {
 	bs := d.BlockSize()
-	tail := append(d.buf[:d.nbuf:d.nbuf], 0x80)
-	for (len(tail)+12)%bs != 0 {
-		tail = append(tail, 0)
-	}
-	tail = binary.LittleEndian.AppendUint64(tail, d.n*8)
-	tail = append(tail, 0, 0, 0, 0)
+	tail := append(d.buf[:d.nbuf:d.nbuf], padding(d.n, bs)...)
 	for off := 0; off < len(tail); off += bs {
 		d.block(tail[off : off+bs])
 	}
@@ -125,6 +120,16 @@ func (d *digest) finish() []byte {
 		}
 	}
 	return out[bs-d.size:]
+}
+
+// padding is what follows a message of n bytes to fill its last block of bs
+// bytes: 0x80, zeros and the 96-bit little-endian bit length.
+func padding(n uint64, bs int) []byte {
+	zeros := (bs - int((n+1+12)%uint64(bs))) % bs //nolint:gosec // G115: the remainder is below bs
+	tail := make([]byte, 1+zeros, 1+zeros+12)
+	tail[0] = 0x80
+	tail = binary.LittleEndian.AppendUint64(tail, n*8)
+	return append(tail, 0, 0, 0, 0)
 }
 
 // block is the compression function: state ⊕ P(state ⊕ m) ⊕ Q(m).

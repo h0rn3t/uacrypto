@@ -33,6 +33,7 @@ function verify(pub, hash, sig) {
 
 const out = [];
 let skipped = 0;
+let macOneBlock = 0;
 for (const line of readFileSync(process.argv[2], "utf8").split("\n")) {
   const f = line.split(" ");
   switch (f[0]) {
@@ -45,6 +46,25 @@ for (const line of readFileSync(process.argv[2], "utf8").split("\n")) {
       const ct = new Uint8Array(8);
       ctx.crypt64(hex(f[2]), ct);
       check("gost28147", str(ct) === f[3], line);
+      break;
+    }
+    case "G": {
+      // GOST 28147 modes under DKE No 1: key iv msg cfb mac32 mac64
+      const ctx = gost89.init();
+      ctx.key(hex(f[1]));
+      const msg = hex(f[3]);
+      if (msg.length > 0) {
+        check("gost28147 cfb encrypt", str(ctx.crypt_cfb(hex(f[2]), msg)) === f[4], line.slice(0, 60));
+        check("gost28147 cfb decrypt", str(ctx.decrypt_cfb(hex(f[2]), hex(f[4]))) === f[3], line.slice(0, 60));
+      }
+      // gost89 MACs a one-block message over that block and a zero block,
+      // as the OpenSSL GOST engine does; uacrypto MACs the block alone.
+      if (msg.length === 8) {
+        macOneBlock++;
+        break;
+      }
+      check("gost28147 mac 32", str(ctx.mac(32, msg)) === f[5], line.slice(0, 60));
+      check("gost28147 mac 64", str(ctx.mac(64, msg)) === f[6], line.slice(0, 60));
       break;
     }
     case "S": {
@@ -78,4 +98,5 @@ for (const [what, [ok, bad]] of [...stats].sort()) {
   failed ||= bad > 0;
 }
 console.log(`jkurwa   skipped ${skipped} signature cases: curve not in jkurwa or zero hash`);
+console.log(`jkurwa   skipped ${macOneBlock} one-block MAC cases: gost89 appends a zero block`);
 process.exit(failed ? 1 : 0);

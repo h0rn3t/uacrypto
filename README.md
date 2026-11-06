@@ -7,7 +7,7 @@
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 Українські криптографічні стандарти на чистому Go: ДСТУ 4145-2002, ГОСТ 34.311-95,
-ДСТУ 7564:2014 «Купина», ДСТУ 7624:2014 «Калина» та ГОСТ 28147-89.
+ДСТУ 7564:2014 «Купина», ДСТУ 7624:2014 «Калина», ДСТУ 8845:2019 «Струмок» та ГОСТ 28147-89.
 
 - **Без залежностей** — лише стандартна бібліотека Go.
 - **Сумісність байт у байт** з Bouncy Castle та бібліотекою ІІТ «Користувач ЦСК» (EU Sign):
@@ -18,12 +18,13 @@
 
 | Пакет | Стандарт | Що вміє |
 |---|---|---|
-| [`dstu4145`](https://pkg.go.dev/github.com/h0rn3t/uacrypto/dstu4145) | ДСТУ 4145-2002 — цифровий підпис на еліптичних кривих | усі 10 іменованих кривих (зокрема M257), генерація ключів, підпис, перевірка, стиснене кодування відкритого ключа, підпис `r‖s` у форматі ІІТ |
-| [`gost34311`](https://pkg.go.dev/github.com/h0rn3t/uacrypto/gost34311) | ГОСТ 34.311-95 — функція гешування | `hash.Hash`, ДКЕ №1 за замовчуванням або власний S-блок |
-| [`kupyna`](https://pkg.go.dev/github.com/h0rn3t/uacrypto/kupyna) | ДСТУ 7564:2014 «Купина» — функція гешування | `hash.Hash` на 256, 384 і 512 біт |
-| [`kalyna`](https://pkg.go.dev/github.com/h0rn3t/uacrypto/kalyna) | ДСТУ 7624:2014 «Калина» — блоковий шифр | `cipher.Block` з блоком 128, 256 і 512 біт; CMAC, GCM, CCM, XTS і обгортання ключів |
-| [`pki`](https://pkg.go.dev/github.com/h0rn3t/uacrypto/pki) | X.509 і CMS з ДСТУ 4145 | ключ ДСТУ 4145 із сертифіката (явні параметри чи OID кривої, ДКЕ, le/be), РНОКПП і ЄДРПОУ власника, перевірка підпису сертифіката (ГОСТ 34.311, Купина-256, Купина-512), створення й перевірка CMS SignedData: файлів `.p7s` (CAdES-BES, CAdES-T і CAdES-X Long) і позначок часу RFC 3161, клієнт TSP, клієнт OCSP і перевірка відповідей OCSP; для ЦСК — випуск сертифікатів з іменами й розширеннями, як у ЦСК, PKCS#10, ключі PKCS#8 у форматі BC, відповіді OCSP і позначки часу, пакети `.p7b` |
-| [`gost28147`](https://pkg.go.dev/github.com/h0rn3t/uacrypto/gost28147) | ГОСТ 28147-89 — блоковий шифр | `cipher.Block`, ДКЕ №1, розпакування й пакування ДКЕ параметрів ключа |
+| [`dstu4145`](https://pkg.go.dev/github.com/h0rn3t/uacrypto/dstu4145) | ДСТУ 4145-2002 — цифровий підпис на еліптичних кривих | усі 10 іменованих кривих (зокрема M257), генерація ключів, підпис, перевірка, стиснене кодування відкритого ключа, підпис `r‖s` у форматі ІІТ, узгодження ключів DH з кофактором (`ECDH`) |
+| [`gost34311`](https://pkg.go.dev/github.com/h0rn3t/uacrypto/gost34311) | ГОСТ 34.311-95 — функція гешування | `hash.Hash`, ДКЕ №1 за замовчуванням або власний S-блок; відтворює контрольні приклади стандарту; HMAC — `crypto/hmac` над `New` |
+| [`kupyna`](https://pkg.go.dev/github.com/h0rn3t/uacrypto/kupyna) | ДСТУ 7564:2014 «Купина» — функція гешування | `hash.Hash` на 256, 384 і 512 біт; MAC з ключем (`NewMAC`) |
+| [`kalyna`](https://pkg.go.dev/github.com/h0rn3t/uacrypto/kalyna) | ДСТУ 7624:2014 «Калина» — блоковий шифр | `cipher.Block` з блоком 128, 256 і 512 біт; режими CTR, CFB, OFB, CBC, CMAC, GMAC, GCM, CCM, XTS і обгортання ключів — усі приклади стандарту, з неповними блоками |
+| [`strumok`](https://pkg.go.dev/github.com/h0rn3t/uacrypto/strumok) | ДСТУ 8845:2019 «Струмок» — потоковий шифр | `cipher.Stream` з ключем 256 і 512 біт; відтворює контрольні приклади стандарту |
+| [`pki`](https://pkg.go.dev/github.com/h0rn3t/uacrypto/pki) | X.509 і CMS з ДСТУ 4145 | ключ ДСТУ 4145 із сертифіката (явні параметри чи OID кривої, ДКЕ, le/be), РНОКПП і ЄДРПОУ власника, перевірка підпису сертифіката (ГОСТ 34.311, Купина-256, Купина-512), створення й перевірка CMS SignedData: файлів `.p7s` (CAdES-BES, CAdES-T і CAdES-X Long), контейнерів ASiC-S і ASiC-E з CAdES і позначок часу RFC 3161, клієнт TSP, клієнт OCSP і перевірка відповідей OCSP, перевірка CRL і статусу за повним і дельта-CRL; для ЦСК — випуск сертифікатів з іменами й розширеннями, як у ЦСК, PKCS#10, ключі PKCS#8 у форматах BC та ІІТ, ключові файли PKCS#12 і PKCS#8 з паролем (ГОСТ 28147, як у ІІТ), конверти CMS EnvelopedData, відповіді OCSP, CRL і позначки часу, пакети `.p7b` |
+| [`gost28147`](https://pkg.go.dev/github.com/h0rn3t/uacrypto/gost28147) | ГОСТ 28147-89 — блоковий шифр | `cipher.Block`, гамування (`NewCTR`), гамування зі зворотним зв'язком (`cipher.NewCFBEncrypter`), імітовставка (`NewMAC`); ДКЕ №1 з додатків 1–10 до інструкції №114, тестова таблиця ГОСТ 34.311, розпакування й пакування ДКЕ |
 
 ## Встановлення
 
@@ -188,6 +189,25 @@ CAdES-B-LT з EN 319 122: так їх називають і [тестові пр
 наявну відповідь OCSP, а статуси й час відповідей лишає на ваш розсуд; довіру до кореня перевіряйте
 окремо. Обидві форми перевірено на тестових прикладах ЦЗО (`pki/testdata/czo-test-*`).
 
+### Контейнери ASiC (`.asics`, `.asice`)
+
+```go
+sign := func(data []byte) ([]byte, error) { // відокремлений CAdES; можна додати позначку часу й дані перевірки
+	return pki.SignData(rand.Reader, data, key, cert, pki.SignOptions{Detached: true})
+}
+asics, err := pki.CreateASiCS(pki.ASiCFile{Name: "звіт.pdf", Data: pdf}, sign)
+asice, err := pki.CreateASiCE([]pki.ASiCFile{{Name: "a.pdf", Data: a}, {Name: "b.xml", Data: b}}, false, sign)
+
+files, signers, err := pki.VerifyASiC(asice, certs) // лише файли, які покриває підпис
+```
+
+Контейнери — як у ІІТ (ETSI EN 319 162-1): ASiC-S підписує сам файл (`META-INF/signature.p7s`), ASiC-E —
+маніфест `META-INF/ASiCManifest001.xml` з гешами файлів (Купина-256 або ГОСТ 34.311, URI
+`…xmlenc#dstu7564-256` і `…xmlenc#gost34311`, як пише ІІТ). Маніфест для того самого файла збігається з
+маніфестом ІІТ байт у байт; контейнери ЦЗО з CAdES-BES, T і X Long перевіряються. Файл, якого не перелічує
+жоден маніфест, `VerifyASiC` не повертає; змінений файл — `ErrInvalidSignature`. Контейнери з XAdES
+поки що не підтримуються (`errors.ErrUnsupported`).
+
 ### Статус сертифіката (OCSP)
 
 ```go
@@ -209,6 +229,23 @@ resp, err = pki.ParseOCSPResponse(der, cert.SerialNumber, issuer) // збере�
 цього сертифіката й повернений nonce. Відповідача шукають за іменем або за KeyHash, що дорівнює
 SubjectKeyId (так пише monobank). `ParseOCSPResponse` не перевіряє свіжість — порівняйте
 `ThisUpdate` і `NextUpdate` з потрібним часом; `resp.Raw` — уся відповідь для зберігання.
+
+### Статус сертифіката (CRL)
+
+```go
+full, err := pki.ParseRevocationList(fullDER, issuer)   // підпис ДСТУ 4145, ім'я, AKI і cRLSign видавця
+delta, err := pki.ParseRevocationList(deltaDER, issuer) // дельта-CRL, як у ЦЗО й КНЕДП; може бути nil
+entry, revoked, err := pki.RevocationStatus(cert.SerialNumber, full, delta)
+if revoked {
+	fmt.Println(entry.RevocationTime, entry.ReasonCode) // 6 — certificateHold: призупинено
+}
+```
+
+Список розбирає `crypto/x509` (`*x509.RevocationList`); `ParseRevocationList` перевіряє, що його підписав
+саме цей ключ видавця. `RevocationStatus` бере дельта-CRL понад повним: запис дельти важливіший, а
+`removeFromCRL` у ній знімає призупинення; дельта має стосуватися того самого ключа видавця й повного CRL
+не новішого за нього. Свіжість (`ThisUpdate`, `NextUpdate`) не перевіряється, як і в OCSP. Перевірено на
+повних і дельта-CRL ЦЗО: статус відкликаного сертифіката збігається з відповіддю OCSP ЦЗО.
 
 ### ЦСК: сертифікати, заявки, OCSP і TSP
 
@@ -250,6 +287,11 @@ resp, _ := pki.CreateOCSPResponse(rand.Reader, tmpl, responder, responderKey)
 tsReq, _ := pki.ParseTimeStampRequest(body)
 tsResp, _ := pki.CreateTimeStampResponse(rand.Reader, tsReq, &pki.TimeStamp{Time: time.Now(), SerialNumber: serial, Policy: policy, Certificate: tsa}, tsaKey)
 
+// CRL: шаблон — x509.RevocationList; AKI — з SubjectKeyId видавця; дельта-CRL — з критичним
+// Delta CRL Indicator (2.5.29.27, номер базового повного CRL) в ExtraExtensions
+crlDER, _ := pki.CreateRevocationList(rand.Reader, &x509.RevocationList{Number: number, ThisUpdate: now, NextUpdate: now.Add(7 * 24 * time.Hour),
+	RevokedCertificateEntries: entries}, root, key)
+
 // пакет сертифікатів, як CACertificates.p7b
 certs, _ := pki.ParseCertificateBundle(p7b)
 p7b, _ = pki.MarshalCertificateBundle(certs)
@@ -269,6 +311,42 @@ AKI самопідписаного — його SKI, розширене приз
 d := key.Bytes()                               // big-endian, довжина порядку кривої
 restored, err := dstu4145.NewPrivateKey(curve, d)
 ```
+
+### Ключові файли (PKCS#12, PKCS#8 з паролем)
+
+```go
+pfx, err := pki.DecodePFX(data, password)     // .pfx/.p12 від ІІТ чи cryptonite; pki.ErrIncorrectPassword
+key, err := pfx.KeyFor(cert)                  // ключ, відкритий ключ якого засвідчує cert
+data, err = pki.EncodePFX(rand.Reader, pfx, newPassword, 10000) // зміна пароля — decode і encode
+
+pkcs8, err := pki.DecryptPKCS8PrivateKey(encrypted, password) // EncryptedPrivateKeyInfo, як у ІІТ і jkurwa
+key, err = pki.ParsePKCS8PrivateKey(pkcs8)                     // і запис ІІТ: d little-endian
+agreement, err := pki.ParsePKCS8KeyAgreementKey(pkcs8)         // ключ узгодження ІІТ з атрибутів
+```
+
+Пароль захищає ключ так, як у ІІТ і cryptonite: PBES2, PBKDF2 на HMAC ГОСТ 34.311 і ГОСТ 28147-89 у
+режимі CFB з ДКЕ №1; MAC контейнера — HMAC ГОСТ 34.311 з ключем за додатком B RFC 7292. Ключ ІІТ
+у PKCS#8 — сам `d` little-endian, а не `ECPrivateKey`, як у Bouncy Castle; другий ключ, для
+узгодження (конвертів), ІІТ кладе в атрибут `1.3.6.1.4.1.19398.1.1.2.3` з оберненим порядком бітів.
+`EncodePFX` пише ключі в записі ІІТ з OID кривої, тож ключі на кривих з явними параметрами не
+зберігає. Перевірено на PFX ІІТ з тестів cryptonite і на ключі `STORE_A040` з тестів jkurwa
+(шифрування відтворюється байт у байт).
+
+### Конверти (CMS EnvelopedData)
+
+```go
+env, err := pki.EncryptEnvelopedData(rand.Reader, data, agreement, myCert, []*x509.Certificate{theirCert})
+data, err = pki.DecryptEnvelopedData(env, agreement, myCert, []*x509.Certificate{senderCert})
+```
+
+Конверт — як у cryptonite, ІІТ і jkurwa: вміст шифрується ГОСТ 28147-89 у режимі CFB з ДКЕ сертифіката
+відправника, ключ вмісту — для кожного одержувача окремо через `dhSinglePass-cofactorDH-gost34311kdf`
+(DH з кофактором, KDF на ГОСТ 34.311) і `GOST28147Wrap` (наказ № 108, VI.1). Одержувачу на тій самій
+кривій відправник пише свій сертифікат за видавцем і номером, тож для розкриття потрібен сертифікат
+відправника; одержувачу на іншій кривій — ефемерний ключ у самому конверті. Розкриваються й конверти в
+режимі гамування та потокові (BER). Конверт нікого не автентифікує: щоб знати відправника, конверт
+підписують. Перевірено на конверті з тестів jkurwa (ключ, обгортання і вміст сходяться байт у байт) і
+звіркою з jkurwa в обидва боки (`make envelope` у `parity`).
 
 ### Геші
 
@@ -291,13 +369,31 @@ sealed, err := gcm.Seal(nonce, plaintext, nil)
 opened, err := gcm.Open(nonce, sealed, nil)
 ```
 
-`NewCipher128` бере ключ 16 або 32 байти, `NewCipher512` — 64 байти. `CMAC`, `NewCCM`,
-`NewXTS`, `Wrap` і `Unwrap` реалізують режими ДСТУ 7624, як їх рахує Bouncy Castle 1.86.
-`NewGCM` додатково автентифікує нонс як перший блок AAD: для сумісності з BC
-`KGCMBlockCipher` передавайте йому `nonce || additionalData` як AAD. Теги відрізняються
-від звичайного ДСТУ GCM; попередні шифротексти без автентифікації нонса не приймаються.
-Нонс GCM і CCM має бути завдовжки рівно один блок. Повторний нонс із тим самим ключем
-неприпустимий. `crypto/cipher` CTR, CBC, CFB і OFB — інша схема, не лічильник ДСТУ.
+`NewCipher128` бере ключ 16 або 32 байти, `NewCipher512` — 64 байти. `NewCTR`, `NewCFB`,
+`CMAC`, `GMAC`, `NewGCM`, `NewCCM`, `NewXTS`, `Wrap` і `Unwrap` реалізують режими ДСТУ 7624 і
+відтворюють усі 75 прикладів стандарту з тестів сертифікованої бібліотеки
+[cryptonite](https://github.com/privat-it/cryptonite), зокрема неповні блоки (крадіжка шифротексту
+в XTS, доповнення ключа в `Wrap`, `80 00…` у CMAC і CCM); CFB і CMAC збігаються з бібліотекою ІІТ на всіх
+довжинах. OFB і CBC ДСТУ — це `cipher.NewOFB` і `cipher.NewCBCEncrypter` над блоком «Калини»;
+CTR і CFB з `crypto/cipher` — інші схеми.
+
+`NewGCM` рахує GCM за ДСТУ: нонс у тег не входить, тож тег перевіряється й з іншим нонсом,
+а повідомлення без відкритого тексту має однаковий тег за будь-якого нонса. Для систем, що
+обмінюються лише між собою, `NewGCMWithNonceAuth` автентифікує й нонс (як `NewGCM` з
+`nonce || additionalData` в AAD). Нонс GCM і CCM має бути завдовжки рівно один блок. Повторний
+нонс із тим самим ключем неприпустимий.
+
+### Шифрування «Струмком»
+
+```go
+stream, err := strumok.NewCipher(key, iv) // ключ 32 або 64 байти, IV 32 байти
+stream.XORKeyStream(ciphertext, plaintext) // той самий виклик розшифровує
+```
+
+Стандарт задає ключ, IV і гаму 64-бітними словами; `strumok` читає й пише кожне слово
+little-endian, як реалізації на C. Гама відтворює всі вісім прикладів додатка D ДСТУ 8845:2019.
+Чи так само впорядковує байти бібліотека ІІТ (сесії `EU_SESSION_ENC_ALGO_DSTU8845_*`), ще не
+перевірено. Повторна пара ключ–IV неприпустима: шифр не автентифікує дані.
 
 ГОСТ 34.311 з нестандартним ДКЕ, наприклад з параметрів ключа:
 
@@ -328,7 +424,8 @@ h, err := gost34311.NewWithSbox(sbox)
 - реальні сертифікати ЗЦ НБУ, ЦЗО, ДКСУ, «Вчасно» і monobank: ГОСТ 34.311, Купина-256 і Купина-512, ключі le і be, крива явними параметрами;
 - реальні позначки часу TSA ДПС, ПриватБанку і Дії (CMS з ГОСТ 34.311 і Купиною-256), зокрема зі зміненим вмістом і підписом;
 - реальні відповіді OCSP ЦЗО (good і revoked, делегований відповідач за іменем, дві різні криві) і monobank (відповідач за KeyHash, Купина-512);
-- контрольні приклади Купини-256 з ДСТУ 7564:2014 і Калини-128/128 з ДСТУ 7624:2014;
+- контрольні приклади Купини-256 з ДСТУ 7564:2014, Калини-128/128 з ДСТУ 7624:2014 і «Струмка» з додатка D
+  ДСТУ 8845:2019;
 - фаз-тест розбору відкритого ключа.
 
 **Покриття тестами** рахує CI на кожен пуш у `main` і кожен pull request, звіт —
@@ -347,7 +444,7 @@ h, err := gost34311.NewWithSbox(sbox)
 відтворювані випадкові дані рахують uacrypto та незалежні бібліотеки на Java, Rust і JavaScript. Даних такий обсяг:
 
 - 316 повідомлень завдовжки 0–4096 байтів, зокрема на межах блоків 32, 64 і 128;
-- 300 ключів і блоків ГОСТ 28147;
+- 300 ключів і блоків ГОСТ 28147 і 141 повідомлення завдовжки 0–1023 байти для його CFB та імітовставки;
 - по 60 ключів і блоків Калини на кожну з 5 комбінацій блок/ключ (128/128, 128/256, 256/256, 256/512, 512/512);
 - по 10 ключів і підписів на кожну з 10 кривих, з гешами довжиною 1, 32, 48 і 64 байти та нульовим гешем.
 
@@ -365,7 +462,7 @@ h, err := gost34311.NewWithSbox(sbox)
 | [RustCrypto `kupyna`](https://crates.io/crates/kupyna) 0.1.0 (Rust) | — | ✅ 948/948 | — | — | — | — |
 | [`ua-cryptography-pki`](https://crates.io/crates/ua-cryptography-pki) 0.1.6 (Rust): CMS | — | — | — | — | ✅ 28/28 CMS-підписів uacrypto | ✅ 28/28 сертифікатів і 28/28 CMS-підписів |
 | [`structured-dstu4145`](https://crates.io/crates/structured-dstu4145) 0.20.2 (Rust) | ✅ 316/316 | ✅ 948/948 | — | — | ✅ 100/100 ³ | — ⁴ |
-| [`jkurwa`](https://github.com/dstucrypt/jkurwa) 1.22.9 і `gost89` 0.1.12 (JS) | ✅ 316/316 | — | ✅ 300/300 | — | ✅ 81/81 ⁵ | ✅ 27/27 ⁵ |
+| [`jkurwa`](https://github.com/dstucrypt/jkurwa) 1.22.9 і `gost89` 0.1.12 (JS) | ✅ 316/316 | — | ✅ 300/300, CFB 280/280, імітовставка 280/280 ⁶ | — | ✅ 81/81 ⁵ | ✅ 27/27 ⁵ |
 
 ¹ шифрування й розшифрування.
 ² `ua-cryptography-dstu4145` іде буквою стандарту: геш подається старшим байтом уперед,
@@ -375,6 +472,8 @@ h, err := gost34311.NewWithSbox(sbox)
 ⁴ крейт лише перевіряє підписи.
 ⁵ `jkurwa` має лише криві 191, 257 і 431 біт; нульовий геш (ДСТУ 4145 замінює його на 1) вона
 не підписує й відхиляє його правильний підпис, тому ці випадки не звіряються.
+⁶ імітовставка 32 і 64 біти; повідомлення рівно з одного блока `gost89` доповнює нульовим блоком
+(як OpenSSL GOST engine), а uacrypto і cryptonite — ні, тож такий випадок не звіряється.
 
 `make czo` перевіряє кожен сертифікат із публічного пакета ЦСК
 [ЦЗО](https://czo.gov.ua/download/certificates/CACertificates.p7b) ключем його видавця: з 1003
@@ -393,11 +492,13 @@ h, err := gost34311.NewWithSbox(sbox)
   64-бітних лімбах, драбина Монтгомері для секретних скалярів, арифметика за модулем
   порядку кривої без гілок;
 - «Калина»: розгортання ключа, шифрування і розшифрування блокового шифру; режими
-  (CMAC, GCM, CCM, XTS, обгортання ключа) — без розгалужень і звернень до таблиць за
+  (CTR, CFB, CMAC, GMAC, GCM, CCM, XTS, обгортання ключа) — без розгалужень і звернень до таблиць за
   секретом поза самим шифром, але окремо часовим тестом не перевіряються;
 - «Купина»: функція стиснення;
-- ГОСТ 28147-89: раунд шифру;
-- ГОСТ 34.311 (хеш): через раунд ГОСТ 28147, окремо часовим тестом не перевіряється.
+- ГОСТ 28147-89: раунд шифру; гамування й імітовставка — без розгалужень за секретом поза раундом;
+- ГОСТ 34.311 (хеш): через раунд ГОСТ 28147, окремо часовим тестом не перевіряється;
+- «Струмок»: ініціалізація й генерація гами (перетворення T — S-блоки й MDS «Калини»,
+  множення на α і α⁻¹ — масками в GF(2^8)).
 
 Заміни S-блоків виконуються повним проходом по таблиці з масками, множення в GF(2^8) —
 масками, без звернень до пам'яті за секретним індексом.

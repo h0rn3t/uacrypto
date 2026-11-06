@@ -12,8 +12,9 @@ import (
 
 // Vectors are the output of Bouncy Castle 1.86 (DSTU7624Mac, KGCMBlockCipher,
 // KCCMBlockCipher, KXTSBlockCipher, DSTU7624WrapEngine). The key is
-// sequence(0, keyLen); other inputs are named on the case. GCM uses
-// nonce || additionalData as the AAD passed to KGCMBlockCipher.
+// sequence(0, keyLen); other inputs are named on the case. TestGCM checks
+// NewGCMWithNonceAuth: KGCMBlockCipher was given nonce || additionalData as
+// its AAD.
 
 func mustCipher(t *testing.T, block, key int) cipher.Block {
 	t.Helper()
@@ -75,9 +76,6 @@ func TestCMAC(t *testing.T) {
 				t.Fatalf("CMAC(nil) error = %v", err)
 			}
 			equalHex(t, "CMAC(nil)", got, tt.empty)
-			if _, err = kalyna.CMAC(b, sequence(tt.key, tt.block-1), tt.block); err == nil {
-				t.Errorf("CMAC(partial) error = nil")
-			}
 		})
 	}
 }
@@ -115,7 +113,7 @@ func TestGCM(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			b := mustCipher(t, tt.block, tt.key)
-			g, err := kalyna.NewGCM(b, 16)
+			g, err := kalyna.NewGCMWithNonceAuth(b, 16)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -134,7 +132,7 @@ func TestGCM(t *testing.T) {
 				t.Errorf("Open(partial) = %x, want plaintext", opened)
 			}
 
-			whole, err := kalyna.NewGCM(b, tt.block)
+			whole, err := kalyna.NewGCMWithNonceAuth(b, tt.block)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -144,7 +142,7 @@ func TestGCM(t *testing.T) {
 			}
 			equalHex(t, "Seal(whole)", sealed, tt.whole)
 
-			short, err := kalyna.NewGCM(b, 8)
+			short, err := kalyna.NewGCMWithNonceAuth(b, 8)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -206,60 +204,10 @@ func TestCCM(t *testing.T) {
 		})
 	}
 
-	short := []struct {
-		name       string
-		block, key int
-		tag        int
-		want       string
-	}{
-		{"128/128", 16, 16, 16, "35c3eb234e778b7971b94d6f8986f95112ba37a9b0"},
-		{"128/256", 16, 32, 16, "2f5a2065cf1743e8d07e8f500cf68f047c994b5275"},
-		{"256/256", 32, 32, 16, "e581eb468db6f9a87fa1a6c1e27e3b008ac44b0dfe"},
-		{"256/512", 32, 64, 16, "35dece8d46944b507461538132f949e49725b9cb3e"},
-		{"512/512", 64, 64, 16, "337e77bff6db2624f039a36a046e8471d175645b9e"},
-	}
-	for _, tt := range short {
-		t.Run("short "+tt.name, func(t *testing.T) {
-			t.Parallel()
-			c, err := kalyna.NewCCM(mustCipher(t, tt.block, tt.key), 4, tt.tag)
-			if err != nil {
-				t.Fatal(err)
-			}
-			nonce := make([]byte, tt.block)
-			copy(nonce, sequence(1, 8))
-			sealed, err := c.Seal(nonce, sequence(4, 5), sequence(2, 3))
-			if err != nil {
-				t.Fatalf("Seal() error = %v", err)
-			}
-			equalHex(t, "Seal()", sealed, tt.want)
-		})
-	}
-
-	long := []struct {
-		name       string
-		block, key int
-		want       string
-	}{
-		{"256/256", 32, 32, "4c118c6c577c175c37"},
-		{"256/512", 32, 64, "8b912a2c1a698c11f2"},
-		{"512/512", 64, 64, "c79c730ff4a6a4c868"},
-	}
-	for _, tt := range long {
-		t.Run("Nb 6 "+tt.name, func(t *testing.T) {
-			t.Parallel()
-			c, err := kalyna.NewCCM(mustCipher(t, tt.block, tt.key), 6, 8)
-			if err != nil {
-				t.Fatal(err)
-			}
-			nonce := make([]byte, tt.block)
-			copy(nonce, sequence(1, 4))
-			sealed, err := c.Seal(nonce, sequence(3, 1), sequence(2, tt.block))
-			if err != nil {
-				t.Fatalf("Seal() error = %v", err)
-			}
-			equalHex(t, "Seal()", sealed, tt.want)
-		})
-	}
+	// Bouncy Castle KCCMBlockCipher zero-pads a partial plaintext block and
+	// starts the tag keystream on a fresh block; the examples of DSTU 7624
+	// (TestStandardCCM) pad with 80 00... and continue the keystream, so its
+	// partial-block vectors are not kept here.
 
 	t.Run("Nb 8 empty plaintext", func(t *testing.T) {
 		t.Parallel()
@@ -465,7 +413,7 @@ func TestModeParameters(t *testing.T) {
 			_, err = x.Encrypt(sequence(0, 16), sequence(1, 15))
 			return err
 		}},
-		{"wrap partial", func() error { _, err := kalyna.Wrap(b, sequence(0, 15)); return err }},
+		{"unwrap partial", func() error { _, err := kalyna.Unwrap(b, sequence(0, 47)); return err }},
 		{"unwrap empty", func() error { _, err := kalyna.Unwrap(b, nil); return err }},
 	}
 	for _, tt := range tests {
@@ -501,4 +449,104 @@ func FuzzGCMRoundTrip(f *testing.F) {
 			t.Errorf("Open(Seal()) = %x, want %x", opened, pt)
 		}
 	})
+}
+
+// A CTR stream may be split anywhere: the next call continues the keystream.
+func TestCTRSplit(t *testing.T) {
+	for _, n := range []int{16, 32, 64} {
+		b := mustCipher(t, n, n)
+		msg := sequence(7, 3*n+n/2)
+		whole, err := kalyna.NewCTR(b, sequence(1, n))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := make([]byte, len(msg))
+		whole.XORKeyStream(want, msg)
+		for _, cut := range []int{1, n - 1, n, n + 1, 2*n + 3} {
+			s, _ := kalyna.NewCTR(b, sequence(1, n))
+			got := make([]byte, len(msg))
+			s.XORKeyStream(got[:cut], msg[:cut])
+			s.XORKeyStream(got[cut:], msg[cut:])
+			if !bytes.Equal(got, want) {
+				t.Errorf("Kalyna-%d CTR split at %d = %x, want %x", n*8, cut, got, want)
+			}
+		}
+		back := make([]byte, len(want))
+		s, _ := kalyna.NewCTR(b, sequence(1, n))
+		s.XORKeyStream(back, want)
+		if !bytes.Equal(back, msg) {
+			t.Errorf("Kalyna-%d CTR decrypt = %x, want %x", n*8, back, msg)
+		}
+	}
+}
+
+// Encrypting then decrypting gives the plaintext back for every length a mode
+// accepts, through the partial-block paths of CFB, XTS and key wrapping.
+func TestModeRoundTrip(t *testing.T) {
+	for _, n := range []int{16, 32, 64} {
+		b := mustCipher(t, n, n)
+		iv := sequence(3, n)
+		for _, size := range []int{0, 1, n/2 - 1, n / 2, n/2 + 1, n - 1, n, n + 1, 2*n - 1, 2 * n, 2*n + n/2, 3*n + 1} {
+			msg := sequence(size, size)
+			for _, segment := range []int{1, 8, n / 2, n} {
+				c, err := kalyna.NewCFB(b, segment)
+				if err != nil {
+					t.Fatal(err)
+				}
+				ct, err := c.Encrypt(iv, msg)
+				if err != nil || len(ct) != size {
+					t.Fatalf("CFB-%d Encrypt(%d bytes) = %d bytes, %v", segment*8, size, len(ct), err)
+				}
+				if pt, err := c.Decrypt(iv, ct); err != nil || !bytes.Equal(pt, msg) {
+					t.Errorf("Kalyna-%d CFB-%d Decrypt(Encrypt(%x)) = %x, %v", n*8, segment*8, msg, pt, err)
+				}
+			}
+			if size == 0 || size >= n {
+				x, _ := kalyna.NewXTS(b)
+				ct, err := x.Encrypt(iv, msg)
+				if err != nil || len(ct) != size {
+					t.Fatalf("XTS Encrypt(%d bytes) = %d bytes, %v", size, len(ct), err)
+				}
+				if pt, err := x.Decrypt(iv, ct); err != nil || !bytes.Equal(pt, msg) {
+					t.Errorf("Kalyna-%d XTS Decrypt(Encrypt(%x)) = %x, %v", n*8, msg, pt, err)
+				}
+			}
+			wrapped, err := kalyna.Wrap(b, msg)
+			if err != nil {
+				t.Fatalf("Wrap(%d bytes) error = %v", size, err)
+			}
+			if key, err := kalyna.Unwrap(b, wrapped); err != nil || !bytes.Equal(key, msg) {
+				t.Errorf("Kalyna-%d Unwrap(Wrap(%x)) = %x, %v", n*8, msg, key, err)
+			}
+		}
+	}
+}
+
+func TestNewModeParameters(t *testing.T) {
+	b := mustCipher(t, 32, 32)
+	tests := []struct {
+		name string
+		fn   func() error
+	}{
+		{"CFB segment 0", func() error { _, err := kalyna.NewCFB(b, 0); return err }},
+		{"CFB segment past block", func() error { _, err := kalyna.NewCFB(b, 33); return err }},
+		{"CFB IV", func() error {
+			c, err := kalyna.NewCFB(b, 32)
+			if err != nil {
+				return err
+			}
+			_, err = c.Encrypt(sequence(0, 16), nil)
+			return err
+		}},
+		{"CTR IV", func() error { _, err := kalyna.NewCTR(b, sequence(0, 16)); return err }},
+		{"CTR nil block", func() error { _, err := kalyna.NewCTR(nil, nil); return err }},
+		{"GMAC size", func() error { _, err := kalyna.GMAC(b, nil, 7); return err }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := tt.fn(); err == nil {
+				t.Errorf("error = nil, want a parameter error")
+			}
+		})
+	}
 }

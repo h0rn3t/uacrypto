@@ -7,22 +7,39 @@ import (
 	"fmt"
 )
 
-// GCM is a nonce-authenticating profile of DSTU 7624 GCM over a 16-, 32- or
-// 64-byte block cipher. The nonce must be exactly one block and is prepended
-// to additionalData for authentication. For interoperability with Bouncy
-// Castle KGCMBlockCipher, supply nonce || additionalData as its AAD.
-// Tags differ from unmodified DSTU 7624 GCM. A partial final block is
-// zero-padded inside GHASH.
+// GCM is DSTU 7624 GCM over a 16-, 32- or 64-byte block cipher. The nonce
+// must be exactly one block. A partial final block of the additional data or
+// the ciphertext is zero-padded inside GHASH; the standard has no example of
+// one.
 type GCM struct {
 	block     cipher.Block
 	h         []uint64
 	reduction uint64
 	tagSize   int
+	bindNonce bool
 }
 
-// NewGCM returns GCM with a tag of tagSize bytes. tagSize is 8 through the
-// block size. block is already keyed.
+// NewGCM returns GCM as DSTU 7624 defines it and as its examples, the
+// certified cryptonite library and Bouncy Castle KGCMBlockCipher compute it,
+// with a tag of tagSize bytes, 8 through the block size. block is already
+// keyed.
+//
+// The standard leaves the nonce out of the tag: a tag still verifies under a
+// different nonce, which only garbles the plaintext, and a message with no
+// plaintext has the same tag under every nonce. Systems that talk only to
+// themselves can use [NewGCMWithNonceAuth] instead.
 func NewGCM(block cipher.Block, tagSize int) (*GCM, error) {
+	return newGCM(block, tagSize, false)
+}
+
+// NewGCMWithNonceAuth returns GCM that also authenticates the nonce, as the
+// first block of the additional data: its output is that of [NewGCM] given
+// nonce || additionalData. It does not interoperate with DSTU 7624 GCM.
+func NewGCMWithNonceAuth(block cipher.Block, tagSize int) (*GCM, error) {
+	return newGCM(block, tagSize, true)
+}
+
+func newGCM(block cipher.Block, tagSize int, bindNonce bool) (*GCM, error) {
 	n, err := blockBytes(block)
 	if err != nil {
 		return nil, err
@@ -34,7 +51,7 @@ func NewGCM(block cipher.Block, tagSize int) (*GCM, error) {
 	block.Encrypt(zero, zero)
 	h := wordsLE(zero)
 	clear(zero)
-	return &GCM{block: block, h: h, reduction: reductionPolynomial(n), tagSize: tagSize}, nil
+	return &GCM{block: block, h: h, reduction: reductionPolynomial(n), tagSize: tagSize, bindNonce: bindNonce}, nil
 }
 
 // Seal encrypts plaintext and appends the tag. additionalData is
@@ -50,10 +67,10 @@ func (g *GCM) Seal(nonce, plaintext, additionalData []byte) ([]byte, error) {
 	if err := fitsUint32(len(additionalData)); err != nil {
 		return nil, err
 	}
-	counter := g.counter(nonce)
+	gamma := g.keystream(nonce)
 	body := make([]byte, len(plaintext))
-	xorGamma(g.block, counter, body, plaintext)
-	clear(counter)
+	gamma.XORKeyStream(body, plaintext)
+	gamma.wipe()
 	tag := g.tag(nonce, additionalData, body)
 	out := make([]byte, len(body)+g.tagSize)
 	copy(out, body)
@@ -87,28 +104,33 @@ func (g *GCM) Open(nonce, ciphertext, additionalData []byte) ([]byte, error) {
 	if match != 1 {
 		return nil, ErrAuthentication
 	}
-	counter := g.counter(nonce)
+	gamma := g.keystream(nonce)
 	plain := make([]byte, bodyLen)
-	xorGamma(g.block, counter, plain, body)
-	clear(counter)
+	gamma.XORKeyStream(plain, body)
+	gamma.wipe()
 	return plain, nil
 }
 
-func (g *GCM) counter(nonce []byte) []byte {
-	n := g.block.BlockSize()
-	iv := make([]byte, n)
-	copy(iv[n-len(nonce):], nonce)
-	g.block.Encrypt(iv, iv)
-	return iv
+// keystream is the counter keystream from E(nonce).
+func (g *GCM) keystream(nonce []byte) *ctr {
+	counter := make([]byte, len(nonce))
+	g.block.Encrypt(counter, nonce)
+	return newCounter(g.block, counter)
 }
 
-// tag is E(GHASH) with the full-block nonce as the first block of AAD.
+// tag is E(GHASH(additionalData, ciphertext) ⊕ lengths): the bit length of
+// the additional data in the low word, of the ciphertext in the middle one.
+// With bindNonce the nonce is the first block of the additional data.
 func (g *GCM) tag(nonce, additionalData, ciphertext []byte) []byte {
 	acc := make([]uint64, g.block.BlockSize()/8)
-	g.absorb(acc, nonce)
+	aadLen := uint64(len(additionalData))
+	if g.bindNonce {
+		g.absorb(acc, nonce)
+		aadLen += uint64(len(nonce))
+	}
 	g.absorb(acc, additionalData)
 	g.absorb(acc, ciphertext)
-	acc[0] ^= (uint64(len(nonce)) + uint64(len(additionalData))) << 3
+	acc[0] ^= aadLen << 3
 	acc[len(acc)/2] ^= uint64(len32(len(ciphertext))) << 3
 	buf := make([]byte, g.block.BlockSize())
 	putWordsLE(buf, acc)

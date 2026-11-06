@@ -7,6 +7,9 @@
 //	parity cms rust.txt go.txt      checks the CMS signatures of ua-cryptography-pki and signs with the same keys
 //	parity tsa URL rust_cms.txt rust_t.txt go.txt
 //	                                checks the CAdES-T of ua-cryptography-pki and makes CAdES-T with the TSA at URL
+//	parity envelope-gen go_env.txt  makes keys, certificates and CMS EnvelopedData for jkurwa (envelope.go)
+//	parity envelope-check go_env.txt jkurwa_env.txt
+//	                                decrypts the EnvelopedData jkurwa sent back
 //
 // Case lines are space-separated hex ("-" for an empty value):
 //
@@ -71,8 +74,12 @@ func run(args []string, out io.Writer) error {
 		return checkCMS(args[1], args[2], out)
 	case len(args) == 5 && args[0] == "tsa":
 		return checkCAdEST(args[1], args[2], args[3], args[4], out)
+	case len(args) == 2 && args[0] == "envelope-gen":
+		return envelopeGen(args[1])
+	case len(args) == 3 && args[0] == "envelope-check":
+		return envelopeCheck(args[1], args[2], out)
 	}
-	return errors.New("usage: parity gen | parity verify <signatures.txt> | parity czo <CACertificates.p7b> | parity cms <rust.txt> <go.txt> | parity tsa <URL> <rust_cms.txt> <rust_t.txt> <go.txt>")
+	return errors.New("usage: parity gen | parity verify <signatures.txt> | parity czo <CACertificates.p7b> | parity cms <rust.txt> <go.txt> | parity tsa <URL> <rust_cms.txt> <rust_t.txt> <go.txt> | parity envelope-gen <go_env.txt> | parity envelope-check <go_env.txt> <jkurwa_env.txt>")
 }
 
 func encode(b []byte) string {
@@ -113,6 +120,39 @@ func generate(w io.Writer) error {
 		ciphertext := make([]byte, gost28147.BlockSize)
 		block.Encrypt(ciphertext, plaintext)
 		if _, err := fmt.Fprintln(w, "C", encode(key), encode(plaintext), encode(ciphertext)); err != nil {
+			return err
+		}
+	}
+
+	// GOST 28147 modes: every length to five blocks, then random lengths
+	modeLengths := make([]int, 0, 141)
+	for n := range 41 {
+		modeLengths = append(modeLengths, n)
+	}
+	for range 100 {
+		modeLengths = append(modeLengths, r.IntN(1024))
+	}
+	for _, n := range modeLengths {
+		key, iv, msg := make([]byte, gost28147.KeySize), make([]byte, gost28147.BlockSize), make([]byte, n)
+		_, _ = rng.Read(key) // ChaCha8.Read never fails
+		_, _ = rng.Read(iv)
+		_, _ = rng.Read(msg)
+		block, err := gost28147.NewCipher(key, gost28147.DKE1())
+		if err != nil {
+			return err
+		}
+		cfb := make([]byte, n)
+		cipher.NewCFBEncrypter(block, iv).XORKeyStream(cfb, msg) //nolint:gosec,staticcheck // G407: iv comes from the seeded generator above; SA1019: the mode GOST 28147-89 defines
+		macs := make([]string, 0, 2)
+		for _, size := range []int{4, 8} {
+			m, err := gost28147.NewMAC(key, gost28147.DKE1(), size)
+			if err != nil {
+				return err
+			}
+			m.Write(msg)
+			macs = append(macs, encode(m.Sum(nil)))
+		}
+		if _, err := fmt.Fprintln(w, "G", encode(key), encode(iv), encode(msg), encode(cfb), macs[0], macs[1]); err != nil {
 			return err
 		}
 	}

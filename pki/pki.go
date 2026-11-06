@@ -8,11 +8,13 @@
 // the IIT library do; ParseSubjectAttributes reads the subject's РНОКПП and
 // ЄДРПОУ codes. VerifySignedData checks CMS SignedData: signed files
 // (.p7s) and time-stamp tokens. OCSPClient and ParseOCSPResponse check the
-// revocation status of a certificate, and AddValidationData stores the
+// revocation status of a certificate, ParseRevocationList and RevocationStatus
+// check it by full and delta CRLs, and AddValidationData stores the
 // statuses in a signature as CAdES-X Long.
 //
 // For a CA, CreateCertificate issues certificates from crypto/x509
 // templates, ParseCertificateRequest checks PKCS#10 requests,
+// CreateRevocationList issues CRLs,
 // CreateOCSPResponse and CreateTimeStampResponse answer what
 // ParseOCSPRequest and ParseTimeStampRequest read, MarshalName and
 // MarshalSubjectAttributes write the subject's name and codes,
@@ -20,6 +22,14 @@
 // OCSPResponderExtensions the extensions crypto/x509 does not build, and the PKCS#8 and .p7b
 // functions store keys and certificate bundles as Bouncy Castle and the ЦЗО
 // do.
+//
+// For key files, DecodePFX and EncodePFX read and write PKCS#12 as IIT and
+// cryptonite do, and DecryptPKCS8PrivateKey and EncryptPKCS8PrivateKey
+// protect a PKCS#8 key with a password the same way.
+//
+// For envelopes, EncryptEnvelopedData and DecryptEnvelopedData encrypt data
+// for the holders of key agreement certificates as CMS EnvelopedData, the way
+// IIT, cryptonite and jkurwa do.
 //
 // Supported keys use the OID dstu4145le (1.2.804.2.1.1.1.1.3.1.1) or
 // dstu4145be (1.2.804.2.1.1.1.1.3.1.1.1.1) with one of the ten named curves,
@@ -243,19 +253,25 @@ func (k *PublicKey) verify(digest, sig []byte, littleEndian bool) error {
 // signature by the key of parent. It does not check validity periods, key
 // usage or names: build and check the chain with crypto/x509 for that.
 func CheckCertificateSignature(cert, parent *x509.Certificate) error {
+	return checkSignedBy(cert.Raw, cert.RawTBSCertificate, parent)
+}
+
+// checkSignedBy checks the DSTU 4145 signature of signed, a DER certificate
+// or CRL (TBS, signature algorithm, signature), over tbs by the key of parent.
+func checkSignedBy(signed, tbs []byte, parent *x509.Certificate) error {
 	var outer struct {
 		TBS       asn1.RawValue
 		Algorithm pkix.AlgorithmIdentifier
 		Signature asn1.BitString
 	}
-	if err := unmarshal(cert.Raw, &outer); err != nil {
-		return fmt.Errorf("pki: certificate: %w", err)
+	if err := unmarshal(signed, &outer); err != nil {
+		return fmt.Errorf("pki: signed data: %w", err)
 	}
 	key, err := ParsePublicKey(parent.RawSubjectPublicKeyInfo)
 	if err != nil {
 		return err
 	}
-	return key.CheckSignature(outer.Algorithm.Algorithm, cert.RawTBSCertificate, outer.Signature.RightAlign())
+	return key.CheckSignature(outer.Algorithm.Algorithm, tbs, outer.Signature.RightAlign())
 }
 
 // CertificateSignatureAlgorithm returns the OID of the algorithm cert is

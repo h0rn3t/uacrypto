@@ -104,7 +104,7 @@ func AddValidationData(ctx context.Context, signed []byte, certs []*x509.Certifi
 		if has(oidCertValues) || has(oidRevocationValues) {
 			return nil, fmt.Errorf("pki: signer %d already has validation data", i)
 		}
-		cert, err := findSigner(si.SID, pool)
+		cert, err := findCertificate(si.SID, pool)
 		if err != nil {
 			return nil, fmt.Errorf("pki: signer %d: %w", i, err)
 		}

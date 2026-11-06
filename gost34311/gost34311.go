@@ -2,7 +2,9 @@
 // Ukrainian adoption of GOST R 34.11-94, with ДКЕ №1 as the default S-box.
 //
 // The implementation is a port of GOST3411Digest from Bouncy Castle and
-// produces the same digests as Bouncy Castle and the IIT library.
+// produces the same digests as Bouncy Castle and the IIT library, and the
+// examples of the standard with their own S-box. HMAC with GOST 34.311 is the
+// HMAC of crypto/hmac over New.
 package gost34311
 
 import (

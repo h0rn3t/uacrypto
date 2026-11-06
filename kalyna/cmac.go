@@ -6,10 +6,13 @@ import (
 	"fmt"
 )
 
-// CMAC returns the DSTU 7624 CBC-MAC of data, truncated to macSize bytes.
-// data must be a whole number of blocks; macSize is 1 through the block
-// size. An empty message is accepted and has the same tag as one all-zero
-// block: the zero block is masked with E(0) and encrypted.
+// CMAC returns the DSTU 7624 MAC ("вироблення імітовставки") of data,
+// truncated to macSize bytes, 1 through the block size. data is chained
+// through the cipher as in CBC; the last block is masked with E(0) before it
+// is encrypted. A partial last block is padded with 80 00... and masked with
+// E(01 00...) instead, as the examples of the standard, the certified
+// cryptonite library and IIT compute it. An empty message has the MAC of one
+// all-zero block.
 func CMAC(block cipher.Block, data []byte, macSize int) ([]byte, error) {
 	n, err := blockBytes(block)
 	if err != nil {
@@ -18,29 +21,48 @@ func CMAC(block cipher.Block, data []byte, macSize int) ([]byte, error) {
 	if macSize < 1 || macSize > n {
 		return nil, fmt.Errorf("kalyna: MAC size %d, want 1..%d", macSize, n)
 	}
-	if len(data)%n != 0 {
-		return nil, fmt.Errorf("kalyna: CMAC length %d is not a multiple of the %d-byte block", len(data), n)
-	}
 
-	delta := make([]byte, n)
-	block.Encrypt(delta, delta)
-	mac := make([]byte, n)
-	if len(data) == 0 {
-		subtle.XORBytes(mac, mac, delta)
-		block.Encrypt(mac, mac)
-	} else {
-		blocks := len(data) / n
-		for i := range blocks {
-			subtle.XORBytes(mac, mac, data[i*n:(i+1)*n])
-			if i+1 == blocks {
-				subtle.XORBytes(mac, mac, delta)
-			}
-			block.Encrypt(mac, mac)
-		}
+	padded := len(data)%n != 0
+	mask := make([]byte, n)
+	if padded {
+		mask[0] = 1
 	}
-	clear(delta)
+	block.Encrypt(mask, mask)
+	mac := make([]byte, n)
+	last := make([]byte, n)
+	for off := 0; ; off += n {
+		end := min(off+n, len(data))
+		if end < len(data) {
+			subtle.XORBytes(mac, mac, data[off:end])
+			block.Encrypt(mac, mac)
+			continue
+		}
+		copy(last, data[off:end])
+		if padded {
+			last[end-off] = 0x80
+		}
+		subtle.XORBytes(mac, mac, last)
+		subtle.XORBytes(mac, mac, mask)
+		block.Encrypt(mac, mac)
+		break
+	}
+	clear(mask)
+	clear(last)
 	out := make([]byte, macSize)
 	copy(out, mac)
 	clear(mac)
 	return out, nil
+}
+
+// GMAC returns the DSTU 7624 GMAC of data, macSize bytes long, 8 through the
+// block size: the GCM tag of data as additional data with no ciphertext.
+func GMAC(block cipher.Block, data []byte, macSize int) ([]byte, error) {
+	g, err := NewGCM(block, macSize)
+	if err != nil {
+		return nil, err
+	}
+	if err := fitsUint32(len(data)); err != nil {
+		return nil, err
+	}
+	return g.tag(nil, data, nil)[:macSize], nil
 }

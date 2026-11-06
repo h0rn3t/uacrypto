@@ -168,7 +168,7 @@ func verifySignedData(der, detached []byte, certs []*x509.Certificate) (asn1.Obj
 	}
 	signers := make([]Signer, 0, len(sd.SignerInfos))
 	for i, si := range sd.SignerInfos {
-		cert, err := findSigner(si.SID, pool)
+		cert, err := findCertificate(si.SID, pool)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("pki: signer %d: %w", i, err)
 		}
@@ -183,37 +183,45 @@ func verifySignedData(der, detached []byte, certs []*x509.Certificate) (asn1.Obj
 
 // certificates returns the X.509 certificates of sd.
 func (sd *signedData) certificates() ([]*x509.Certificate, error) {
+	return certificateSet(sd.Certificates.Bytes)
+}
+
+// certificateSet returns the X.509 certificates in the content of a
+// CertificateSet, of SignedData or of the OriginatorInfo of EnvelopedData.
+func certificateSet(set []byte) ([]*x509.Certificate, error) {
 	var certs []*x509.Certificate
-	for rest := sd.Certificates.Bytes; len(rest) > 0; {
+	for rest := set; len(rest) > 0; {
 		var raw asn1.RawValue
 		var err error
 		if rest, err = asn1.Unmarshal(rest, &raw); err != nil {
-			return nil, fmt.Errorf("pki: SignedData certificates: %w", err)
+			return nil, fmt.Errorf("pki: certificates: %w", err)
 		}
 		if raw.Class != asn1.ClassUniversal || raw.Tag != asn1.TagSequence {
 			continue // attribute and other certificate formats
 		}
 		c, err := x509.ParseCertificate(raw.FullBytes)
 		if err != nil {
-			return nil, fmt.Errorf("pki: SignedData certificate: %w", err)
+			return nil, fmt.Errorf("pki: certificate: %w", err)
 		}
 		certs = append(certs, c)
 	}
 	return certs, nil
 }
 
-// findSigner returns the certificate that sid names.
-func findSigner(sid asn1.RawValue, pool []*x509.Certificate) (*x509.Certificate, error) {
+// findCertificate returns the certificate of pool that id names: an
+// IssuerAndSerialNumber or a [0] SubjectKeyIdentifier, as in a SignerInfo and
+// the originator of a KeyAgreeRecipientInfo.
+func findCertificate(id asn1.RawValue, pool []*x509.Certificate) (*x509.Certificate, error) {
 	var match func(*x509.Certificate) bool
-	if sid.Class == asn1.ClassContextSpecific && sid.Tag == 0 {
-		match = func(c *x509.Certificate) bool { return bytes.Equal(c.SubjectKeyId, sid.Bytes) }
+	if id.Class == asn1.ClassContextSpecific && id.Tag == 0 {
+		match = func(c *x509.Certificate) bool { return bytes.Equal(c.SubjectKeyId, id.Bytes) }
 	} else {
 		var ias struct {
 			Issuer asn1.RawValue
 			Serial *big.Int
 		}
-		if err := unmarshal(sid.FullBytes, &ias); err != nil {
-			return nil, fmt.Errorf("signer identifier: %w", err)
+		if err := unmarshal(id.FullBytes, &ias); err != nil {
+			return nil, fmt.Errorf("certificate identifier: %w", err)
 		}
 		match = func(c *x509.Certificate) bool {
 			return bytes.Equal(c.RawIssuer, ias.Issuer.FullBytes) && c.SerialNumber.Cmp(ias.Serial) == 0
@@ -222,7 +230,7 @@ func findSigner(sid asn1.RawValue, pool []*x509.Certificate) (*x509.Certificate,
 	if i := slices.IndexFunc(pool, match); i >= 0 {
 		return pool[i], nil
 	}
-	return nil, errors.New("signer certificate not found")
+	return nil, errors.New("certificate not found")
 }
 
 // verifySignerInfo checks one signer: the signed attributes against the
@@ -471,7 +479,7 @@ func signContent(random io.Reader, contentType asn1.ObjectIdentifier, content []
 		Serial *big.Int
 	}{asn1.RawValue{FullBytes: cert.RawIssuer}, cert.SerialNumber})
 	if err != nil {
-		return nil, fmt.Errorf("pki: signer identifier: %w", err)
+		return nil, fmt.Errorf("pki: certificate identifier: %w", err)
 	}
 
 	encap := struct {

@@ -8,13 +8,14 @@ import (
 	"github.com/h0rn3t/uacrypto/kalyna"
 )
 
+// DSTU 7624 GCM leaves the nonce out of the tag; NewGCMWithNonceAuth does not.
 func TestGCMNonceAuthentication(t *testing.T) {
 	for _, n := range []int{16, 32, 64} {
 		for _, size := range []int{0, 1, 2 * n} {
 			for _, aadSize := range []int{0, 3} {
 				t.Run(fmt.Sprintf("block=%d/plain=%d/aad=%d", n, size, aadSize), func(t *testing.T) {
 					t.Parallel()
-					g, err := kalyna.NewGCM(mustCipher(t, n, n), 16)
+					g, err := kalyna.NewGCMWithNonceAuth(mustCipher(t, n, n), 16)
 					if err != nil {
 						t.Fatal(err)
 					}

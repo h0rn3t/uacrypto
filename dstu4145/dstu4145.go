@@ -6,8 +6,10 @@
 // interoperate with Bouncy Castle and the IIT library. Signatures are the
 // values (r, s); MarshalSignature and ParseSignature convert them to and from
 // r||s little-endian, the form of certificates, OCSP and CMS.
+// PrivateKey.ECDH is the cofactor Diffie–Hellman key agreement of Ukrainian
+// CMS enveloped data.
 //
-// GenerateKey, NewPrivateKey, PrivateKey.Bytes and Sign run in constant time
+// GenerateKey, NewPrivateKey, PrivateKey.Bytes, Sign and ECDH run in constant time
 // with respect to the private key and the per-signature secret on 64-bit
 // platforms: the field arithmetic uses fixed 64-bit limbs, secret scalars go
 // through a Montgomery ladder, and arithmetic modulo n has no secret-dependent

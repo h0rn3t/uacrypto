@@ -50,6 +50,10 @@ EncapsulatedContentInfo і набір сертифікатів мають нев
 | `czo-test-xlong-full-kupyna.p7s` | CAdES-X Long (повні дані ЦСК для перевірки) | Купина-256, ДСТУ 4145 |
 | `czo-test-xlong-full-gost.p7s` | CAdES-X Long (повні дані ЦСК для перевірки) | ГОСТ 34.311, ДСТУ 4145 |
 | `czo-test-xlong-full-gost-ber.p7s` | `czo-test-xlong-full-gost.p7s` у BER (див. нижче) | ГОСТ 34.311, ДСТУ 4145 |
+| `czo-test-asics-bes-gost.asics` | ASiC-S, CAdES-BES (контейнер `DSTU/CAdES-BES` ЦЗО, 2026-11-06) | ГОСТ 34.311, ДСТУ 4145 |
+| `czo-test-asice-t-kupyna.asice` | ASiC-E, CAdES-T (`DSTU-7564/CAdES-T`, 2026-11-06) | Купина-256, ДСТУ 4145 |
+| `czo-test-asice-xlong-gost.asice` | ASiC-E, CAdES-X Long (`DSTU/CAdES-X_Long`, 2026-11-06) | ГОСТ 34.311, ДСТУ 4145 |
+| `czo-test-asics-xades-gost.asics` | ASiC-S, XAdES-B-B (`DSTU/XAdES-B-B`, 2026-11-06) | ГОСТ 34.311, ДСТУ 4145 |
 | `czo-test-tsa.der` | сертифікат «TSP-сервер Адміністратора ІТС ЦЗО (CA TEST)» | — |
 | `czo-test-ocsp-ca.der` | сертифікат «OCSP-сервер Адміністратора ІТС ЦЗО (CA TEST)» | — |
 | `czo-test-ocsp-root.der` | сертифікат «OCSP-сервер Центрального засвідчувального органу (ROOT TEST)» | — |
@@ -62,3 +66,29 @@ EncapsulatedContentInfo і набір сертифікатів мають нев
 | `ocsp-czo-good.der` | http://czo.gov.ua/services/ocsp/ | `czo-2601.der`, `572B26CB…E7010000` («Вчасно», `vchasno-kupyna.der`) | good |
 | `ocsp-czo-revoked.der` | http://czo.gov.ua/services/ocsp/ | `czo-2020.der`, `05E19E2C…06010000` з CRL ЦЗО-2020 | revoked 2021-10-07 15:56:54 UTC, superseded |
 | `ocsp-monobank-good.der` | http://ca.monobank.ua/services/ocsp/dstu/ | `monobank-ca.der`, `107D4BC9…48F70463` (`monobank-cmp-kupyna512.der`) | good |
+
+Ключові файли:
+
+| Файл | Що це | Звідки |
+|---|---|---|
+| `iit-123456.pfx` | PKCS#12 від ІІТ, пароль `123456`: два ключі (криві m=257 і m=431, явні параметри), MAC на ГОСТ 34.311 | cryptonite, `src/storageUtest/resources/pkcs12_by_iit(123456).pfx` |
+| `jkurwa-store-a040.dat` | EncryptedPrivateKeyInfo (PBES2, ГОСТ 28147 CFB), пароль `password` | jkurwa 1.22.9, `test/data/STORE_A040.dat` |
+| `jkurwa-key40a0.der` | розшифрований `jkurwa-store-a040.dat`: PKCS#8 у записі ІІТ (`d` little-endian) | jkurwa, `test/data/Key40A0.pem`, розкодований з PEM |
+| `jkurwa-self-signed-enc-40a0.cer` | сертифікат ключа `jkurwa-key40a0.der`; AKI, який `crypto/x509` відхиляє | jkurwa, `test/data/SELF_SIGNED_ENC_40A0.cer` |
+| `jkurwa-key6929.der` | ключ відправника конверта `jkurwa-enc-message.p7`: PKCS#8 у записі ІІТ (`d` little-endian) | jkurwa, `test/data/Key6929.cer` |
+| `jkurwa-self-signed-enc-6929.cer` | сертифікат ключа `jkurwa-key6929.der`; AKI, який `crypto/x509` відхиляє | jkurwa, `test/data/SELF_SIGNED_ENC_6929.cer` |
+
+Конверт (CMS EnvelopedData) `jkurwa-enc-message.p7` — `enc_message.p7` з jkurwa 1.22.9: «123» від ключа
+`jkurwa-key6929.der` сертифікату `jkurwa-self-signed-enc-40a0.cer`, зроблений із підміненим генератором,
+що завжди повертає `12345678901234567890123456789012`. Допоміжна функція тестів jkurwa повертає всі 32 байти
+замість запитаної довжини, тож UKM і IV у файлі мають по 32 байти (шифр узяв перші 8 байтів IV).
+
+Списки відкликаних сертифікатів ЦЗО, завантажені 2026-11-06 з точок розповсюдження сертифікатів,
+які ЦЗО видав, без змін:
+
+| Файл | Звідки | Видавець | Номер | Записів |
+|---|---|---|---|---|
+| `czo-2020-full.crl` | http://czo.gov.ua/download/crls/CZO-2020-Full.crl | `czo-2020.der` | 343283 | 2 (серед них `05E19E2C…06010000` з `ocsp-czo-revoked.der`) |
+| `czo-2020-delta.crl` | http://czo.gov.ua/download/crls/CZO-2020-Delta.crl | `czo-2020.der` | 343357 | 0 |
+| `czo-2026-full.crl` | http://czo.gov.ua/download/crls/CZO-2026-Full.crl | `czo-2601.der` | 342847 | 0 |
+| `czo-2026-delta.crl` | http://czo.gov.ua/download/crls/CZO-2026-Delta.crl | `czo-2601.der` | 343350 | 0 |

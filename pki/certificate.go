@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math/big"
 	"slices"
 	"strings"
@@ -181,24 +182,37 @@ func CreateCertificate(random io.Reader, template, parent *x509.Certificate, pub
 	if err != nil {
 		return nil, fmt.Errorf("pki: %w", err)
 	}
-	var cert struct {
+	// TBSCertificate: version, serialNumber, signature, issuer, validity, subject, subjectPublicKeyInfo, …
+	return resignDSTU(random, der, 2, map[int][]byte{6: pub}, key, issuerKey.DKE)
+}
+
+// resignDSTU signs again with DSTU 4145 der, a certificate or CRL that
+// crypto/x509 signed for a stand-in key: the signature algorithm, field alg
+// of the TBS, becomes dstu4145le, the fields of with replace theirs, and key
+// signs the GOST 34.311 hash of the TBS under dke.
+func resignDSTU(random io.Reader, der []byte, alg int, with map[int][]byte, key *dstu4145.PrivateKey, dke gost28147.Sbox) ([]byte, error) {
+	var signed struct {
 		TBS       asn1.RawValue
 		Algorithm asn1.RawValue
 		Signature asn1.RawValue
 	}
-	if err := unmarshal(der, &cert); err != nil {
-		return nil, fmt.Errorf("pki: certificate: %w", err)
+	if err := unmarshal(der, &signed); err != nil {
+		return nil, fmt.Errorf("pki: %w", err)
 	}
 	signatureAlg, err := asn1.Marshal(pkix.AlgorithmIdentifier{Algorithm: oidDSTU4145LE})
 	if err != nil {
 		return nil, fmt.Errorf("pki: signature algorithm: %w", err)
 	}
-	// TBSCertificate: version, serialNumber, signature, issuer, validity, subject, subjectPublicKeyInfo, …
-	tbs, err := replaceFields(cert.TBS.Bytes, map[int][]byte{2: signatureAlg, 6: pub})
-	if err != nil {
-		return nil, fmt.Errorf("pki: TBSCertificate: %w", err)
+	fields := maps.Clone(with)
+	if fields == nil {
+		fields = map[int][]byte{}
 	}
-	signature, err := signDSTU(random, key, issuerKey.DKE, tbs)
+	fields[alg] = signatureAlg
+	tbs, err := replaceFields(signed.TBS.Bytes, fields)
+	if err != nil {
+		return nil, fmt.Errorf("pki: TBS: %w", err)
+	}
+	signature, err := signDSTU(random, key, dke, tbs)
 	if err != nil {
 		return nil, err
 	}
@@ -287,7 +301,9 @@ type ecPrivateKey struct {
 // MarshalPKCS8PrivateKey and Bouncy Castle write it: the algorithm
 // dstu4145be or dstu4145le with the curve as an OID or in DSTU4145Params,
 // and an ECPrivateKey with d big-endian. A public key in the ECPrivateKey
-// must be the one of d.
+// must be the one of d. It also parses the key as IIT and cryptonite write
+// it, with d itself little-endian in place of the ECPrivateKey; the key
+// agreement key IIT adds to it is ParsePKCS8KeyAgreementKey's.
 func ParsePKCS8PrivateKey(der []byte) (*dstu4145.PrivateKey, error) {
 	var pkcs8 struct {
 		Version    int
@@ -319,8 +335,14 @@ func ParsePKCS8PrivateKey(der []byte) (*dstu4145.PrivateKey, error) {
 		return nil, err
 	}
 	var ec ecPrivateKey
-	if err := unmarshal(pkcs8.PrivateKey, &ec); err != nil {
-		return nil, fmt.Errorf("pki: ECPrivateKey: %w", err)
+	if unmarshal(pkcs8.PrivateKey, &ec) != nil {
+		d := slices.Clone(pkcs8.PrivateKey) // IIT: d little-endian
+		slices.Reverse(d)
+		key, err := dstu4145.NewPrivateKey(curve, d)
+		if err != nil {
+			return nil, fmt.Errorf("pki: %w", err)
+		}
+		return key, nil
 	}
 	key, err := dstu4145.NewPrivateKey(curve, ec.PrivateKey)
 	if err != nil {

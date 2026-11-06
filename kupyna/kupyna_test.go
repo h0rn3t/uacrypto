@@ -63,6 +63,35 @@ func newHash(size int) hash.Hash {
 	}
 }
 
+// The vector of test_dstu7564_hmac in cryptonite's utest_dstu7564.c
+// (BSD-2-Clause, see THIRD_PARTY_NOTICES.md).
+func TestMAC(t *testing.T) {
+	key, _ := hex.DecodeString("707172737475767778797a7b7c7d7e7f80818283")
+	want := "ac9b3027afaa041cb623b098d51200801432290afa30311d11b2450f3d95d98a"
+	m, err := NewMAC(key, Size256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = m.Write([]byte("Hello "))
+	_, _ = m.Write([]byte("World"))
+	if got := hex.EncodeToString(m.Sum(nil)); got != want {
+		t.Errorf("MAC(%x, %q) = %s, want %s", key, "Hello World", got, want)
+	}
+	if got := hex.EncodeToString(m.Sum(nil)); got != want {
+		t.Errorf("second Sum = %s, want %s: Sum must not change the state", got, want)
+	}
+	m.Reset()
+	_, _ = m.Write([]byte("Hello World"))
+	if got := hex.EncodeToString(m.Sum(nil)); got != want {
+		t.Errorf("MAC after Reset = %s, want %s", got, want)
+	}
+	for _, size := range []int{0, 16, 33} {
+		if _, err := NewMAC(key, size); err == nil {
+			t.Errorf("NewMAC(size %d) error = nil, want an error", size)
+		}
+	}
+}
+
 func TestSum(t *testing.T) {
 	for _, tt := range vectors {
 		t.Run(tt.name, func(t *testing.T) {

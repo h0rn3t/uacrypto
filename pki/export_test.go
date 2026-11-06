@@ -19,3 +19,11 @@ func SignContent(random io.Reader, contentType asn1.ObjectIdentifier, content []
 
 // ToDER lets tests reach the BER normalization of the parsers.
 var ToDER = toDER
+
+// The steps of EnvelopedData, for the jkurwa envelope whose IV
+// DecryptEnvelopedData rejects.
+var (
+	EnvelopeKEK     = envelopeKEK
+	GOST28147Wrap   = gost28147Wrap
+	GOST28147Unwrap = gost28147Unwrap
+)

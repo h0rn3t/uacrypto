@@ -1,9 +1,13 @@
 // Package gost28147 implements the GOST 28147-89 block cipher with the S-box
-// tables used in Ukraine (ДКЕ, «довгостроковий ключовий елемент»).
+// tables used in Ukraine (ДКЕ, «довгостроковий ключовий елемент») and its
+// modes: simple replacement (the cipher.Block itself), gamma mode ([NewCTR]),
+// cipher feedback and the MAC ([NewMAC]). The cipher feedback of GOST 28147-89
+// is the CFB of crypto/cipher over the block.
 //
-// The implementation is a port of GOST28147Engine from Bouncy Castle and
-// produces the same output for the same key and S-box. Only the basic
-// electronic-codebook transform is provided; it is what GOST 34.311-95 needs.
+// The block cipher is a port of GOST28147Engine from Bouncy Castle and
+// produces the same output for the same key and S-box; the modes and the
+// tables of [DKE1Appendix] and [GOST34311ExampleSbox] follow the certified
+// cryptonite library and reproduce the examples of its tests.
 package gost28147
 
 import (

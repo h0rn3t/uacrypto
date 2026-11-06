@@ -12,6 +12,7 @@ import (
 	"github.com/h0rn3t/uacrypto/gost28147"
 	"github.com/h0rn3t/uacrypto/kalyna"
 	"github.com/h0rn3t/uacrypto/kupyna"
+	"github.com/h0rn3t/uacrypto/strumok"
 )
 
 // samples per test; Task 6 tunes it so the package fits about five minutes
@@ -175,4 +176,19 @@ func TestGOST28147Encrypt(t *testing.T) {
 			return blockInput{b: b, src: secret(class, gost28147.BlockSize), dst: make([]byte, gost28147.BlockSize)}
 		},
 		func(in blockInput) { in.b.Encrypt(in.dst, in.src) }))
+}
+
+// TestStrumok256 times the key setup and the first two keystream blocks of
+// the generator under a secret key.
+func TestStrumok256(t *testing.T) {
+	iv, buf := make([]byte, strumok.IVSize), make([]byte, 256)
+	check(t, Run(samples,
+		func(class int) []byte { return secret(class, strumok.KeySize256) },
+		func(key []byte) {
+			s, err := strumok.NewCipher(key, iv)
+			if err != nil {
+				panic(err)
+			}
+			s.XORKeyStream(buf, buf)
+		}))
 }

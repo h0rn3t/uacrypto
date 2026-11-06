@@ -2,6 +2,7 @@ package gost34311
 
 import (
 	"bytes"
+	"crypto/hmac"
 	"encoding/hex"
 	"slices"
 	"testing"
@@ -41,6 +42,49 @@ func TestSum(t *testing.T) {
 				t.Errorf("Sum(%s) = %x, want %s", tt.name, got, tt.want)
 			}
 		})
+	}
+}
+
+// The examples of GOST 34.311-95 and GOST R 34.11-94 use their own test S-box,
+// not a ДКЕ; the long messages are those of the standards' appendix.
+func TestStandardExamples(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"", "ce85b99cc46752fffee35cab9a7b0278abb4c2d2055cff685af4912c49490f8d"},
+		{"a", "d42c539e367c66e9c88a801f6649349c21871b4344c6a573f849fdce62f314dd"},
+		{"message digest", "ad4434ecb18f2c99b60cbe59ec3d2469582b65273f48de72db2fde16a4889a4d"},
+		{"This is message, length=32 bytes", "b1c466d37519b82e8319819ff32595e047a28cb6f83eff1c6916a815a637fffa"},
+		{"Suppose the original message has length = 50 bytes", "471aba57a60a770d3a76130635c1fbea4ef14de51f78b4ae57dd893b62f55208"},
+	}
+	for _, tt := range tests {
+		h, err := NewWithSbox(gost28147.GOST34311ExampleSbox())
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = h.Write([]byte(tt.in)) // hash.Hash.Write never returns an error
+		if got := hex.EncodeToString(h.Sum(nil)); got != tt.want {
+			t.Errorf("GOST 34.311 with the example S-box(%q) = %s, want %s", tt.in, got, tt.want)
+		}
+	}
+}
+
+// HMAC with GOST 34.311 is the HMAC of crypto/hmac over New: the vectors of
+// cryptonite (atest_gost34_311.c, utest_hmac.c; BSD-2-Clause, see
+// THIRD_PARTY_NOTICES.md) with ДКЕ №1.
+func TestHMAC(t *testing.T) {
+	tests := []struct{ key, data, want string }{
+		{"70617373776f7264", "31a58dc1462981189cf6c701e276c7553a5ab5f6e36d8418e4aa40c930cf3876",
+			"482e7ae77f7607584c883961770fb374bd85062a1970df77a847c3f9c18ea9a0"},
+		{"646e333130373836646d6931", "cf818caddfbdcdc940c8a530947427ed1a27949062602da471ada0d5cbff32d800000001",
+			"20df9d6f41f32160b77b4d9394257bee5f71adf35025083e52bfa680296a2f15"},
+	}
+	for _, tt := range tests {
+		key, _ := hex.DecodeString(tt.key)
+		data, _ := hex.DecodeString(tt.data)
+		m := hmac.New(New, key)
+		_, _ = m.Write(data) // hash.Hash.Write never returns an error
+		if got := hex.EncodeToString(m.Sum(nil)); got != tt.want {
+			t.Errorf("HMAC(key %s, %s) = %s, want %s", tt.key, tt.data, got, tt.want)
+		}
 	}
 }
 

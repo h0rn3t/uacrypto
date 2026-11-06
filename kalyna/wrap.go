@@ -9,29 +9,50 @@ import (
 	"math"
 )
 
-// Wrap wraps key under the key already set on block. key must be a whole
-// number of blocks. An empty key is accepted and wraps to one block. The
-// result is one block longer than key; that block is a zero integrity check.
+// Wrap wraps key, of any length, under the key already set on block. A key
+// that is not a whole number of blocks is followed by its length in bits,
+// little-endian over half a block, and then by 80 00... up to the block, as
+// the examples of DSTU 7624 and the certified cryptonite library do. A zero
+// integrity block is appended before wrapping, so the result is one block
+// longer than the padded key. An empty key wraps to one block.
 func Wrap(block cipher.Block, key []byte) ([]byte, error) {
 	n, err := blockBytes(block)
 	if err != nil {
 		return nil, err
 	}
+	padded := len(key)
 	if len(key)%n != 0 {
-		return nil, fmt.Errorf("kalyna: wrap length %d is not a multiple of the %d-byte block", len(key), n)
+		padded = (len(key) + n/2 + n - 1) / n * n
 	}
-	steps, err := wrapSteps(2 * (1 + len(key)/n))
+	steps, err := wrapSteps(2 * (1 + padded/n))
 	if err != nil {
 		return nil, err
 	}
-	buf := make([]byte, len(key)+n)
+	buf := make([]byte, padded+n)
 	copy(buf, key)
+	if padded != len(key) {
+		copy(buf[len(key):], keyTrailer(len(key), padded, n))
+	}
 	return wrapBlocks(block, buf, steps, true), nil
 }
 
-// Unwrap unwraps wrapped under the key already set on block and checks the
-// zero integrity block. wrapped must be a positive multiple of the block.
-// A checksum mismatch returns ErrAuthentication and a nil key.
+// keyTrailer is what follows a key of keyLen bytes up to padded: its bit
+// length over half a block, then 80 00... when the block is not yet full.
+func keyTrailer(keyLen, padded, n int) []byte {
+	trailer := make([]byte, padded-keyLen)
+	binary.LittleEndian.PutUint64(trailer, uint64(keyLen)*8) //nolint:gosec // G115: a slice length is not negative
+	if len(trailer) > n/2 {
+		trailer[n/2] = 0x80
+	}
+	return trailer
+}
+
+// Unwrap unwraps wrapped under the key already set on block, checks the zero
+// integrity block and removes the padding Wrap adds to a key that is not a
+// whole number of blocks. wrapped must be a positive multiple of the block.
+// A checksum mismatch returns ErrAuthentication and a nil key. As in the
+// standard's format, a whole-block key whose last bytes happen to form such a
+// padding is read as the shorter key.
 func Unwrap(block cipher.Block, wrapped []byte) ([]byte, error) {
 	n, err := blockBytes(block)
 	if err != nil {
@@ -49,10 +70,27 @@ func Unwrap(block cipher.Block, wrapped []byte) ([]byte, error) {
 		clear(out)
 		return nil, ErrAuthentication
 	}
-	key := make([]byte, len(out)-n)
-	copy(key, out)
+	body := out[:len(out)-n]
+	key := make([]byte, keyLength(body, n))
+	copy(key, body)
 	clear(out)
 	return key, nil
+}
+
+// keyLength returns the length of the key in body, the unwrapped blocks
+// before the integrity block. Every possible padding is compared in full, so
+// the time does not depend on the key bytes.
+func keyLength(body []byte, n int) int {
+	keyLen := len(body)
+	for pad := range n {
+		l := len(body) - pad - n/2
+		if l < 0 || l%n == 0 {
+			continue
+		}
+		trailer := keyTrailer(l, len(body), n)
+		keyLen = subtle.ConstantTimeSelect(subtle.ConstantTimeCompare(body[l:], trailer), l, keyLen)
+	}
+	return keyLen
 }
 
 func wrapSteps(halves int) (int, error) {

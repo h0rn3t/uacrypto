@@ -1,21 +1,23 @@
 // Package kalyna implements the Kalyna block cipher of DSTU 7624:2014
-// (128-, 256- and 512-bit blocks) and the modes CMAC, GCM, CCM, XTS and key
-// wrapping based on Bouncy Castle 1.86 (DSTU7624Mac,
-// KGCMBlockCipher, KCCMBlockCipher, KXTSBlockCipher, DSTU7624WrapEngine).
-// GCM additionally authenticates the nonce as a prefix of the additional data;
-// its tags differ from unmodified DSTU 7624 GCM. GCM and CCM require a nonce
-// of exactly one block.
+// (128-, 256- and 512-bit blocks) and its modes: counter ([NewCTR]), cipher
+// feedback ([NewCFB]), the MACs [CMAC] and [GMAC], [GCM], [CCM], [XTS] and key
+// wrapping ([Wrap]). Every mode reproduces the examples of the standard as the
+// certified cryptonite library tests them, partial blocks included, and CFB
+// and CMAC agree with the IIT library on every length.
 //
-// crypto/cipher CTR, CBC, CFB and OFB are a different construction from the
-// DSTU counter. GCM and CCM accept a partial final block by zero-padding it
-// inside the authentication; DSTU 7624 publishes no vector for that case.
-// Reusing a GCM or CCM nonce under one key is catastrophic and is not
-// detected.
+// DSTU 7624 OFB and CBC are the OFB and CBC of crypto/cipher over a Kalyna
+// block; CBC leaves the padding to the caller, and the standard's examples pad
+// with 80 00.... The CTR and CFB of crypto/cipher are other constructions.
+//
+// GCM and CCM require a nonce of exactly one block. DSTU 7624 GCM leaves the
+// nonce out of the tag; [NewGCMWithNonceAuth] authenticates it as well, for
+// systems that talk only to themselves. Reusing a GCM or CCM nonce under one
+// key is catastrophic and is not detected.
 //
 // The block cipher (encryption, decryption and key expansion) runs in constant
-// time on 64-bit platforms. The modes (CMAC, GCM, CCM, XTS and key wrapping)
-// take no secret-dependent branches or table lookups beyond the cipher, but
-// the timing test covers only the block cipher.
+// time on 64-bit platforms. The modes take no secret-dependent branches or
+// table lookups beyond the cipher, but the timing test covers only the block
+// cipher.
 package kalyna
 
 import (

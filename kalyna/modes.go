@@ -2,7 +2,6 @@ package kalyna
 
 import (
 	"crypto/cipher"
-	"crypto/subtle"
 	"errors"
 	"fmt"
 	"math"
@@ -40,20 +39,6 @@ func fitsUint32(n int) error {
 
 func len32(n int) uint32 {
 	return uint32(n) //nolint:gosec // G115: fitsUint32 rejected a longer input
-}
-
-// xorGamma writes src XORed with the DSTU 7624 counter keystream to dst.
-// counter is incremented, little-endian, before each block. dst and src may
-// be the same slice; a short final block uses the leading gamma bytes.
-func xorGamma(block cipher.Block, counter, dst, src []byte) {
-	gamma := make([]byte, len(counter))
-	for off := 0; off < len(src); off += len(counter) {
-		incrementLE(counter)
-		block.Encrypt(gamma, counter)
-		end := min(off+len(counter), len(src))
-		subtle.XORBytes(dst[off:end], src[off:end], gamma)
-	}
-	clear(gamma)
 }
 
 // incrementLE adds one to the little-endian counter, wrapping to zero. It

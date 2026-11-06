@@ -1,7 +1,6 @@
 package kalyna
 
 import (
-	"bytes"
 	"crypto/cipher"
 	"crypto/subtle"
 	"encoding/binary"
@@ -54,12 +53,13 @@ func (c *CCM) Seal(nonce, plaintext, additionalData []byte) ([]byte, error) {
 	}
 	nonceBlock := leftAlign(nonce, n)
 	mac := c.sum(nonceBlock, additionalData, plaintext)
-	counter := bytes.Clone(nonceBlock)
-	c.block.Encrypt(counter, counter)
+	// The tag is encrypted with the keystream that follows the plaintext,
+	// not from a fresh block.
+	gamma := c.keystream(nonceBlock)
 	out := make([]byte, len(plaintext)+c.tagSize)
-	xorGamma(c.block, counter, out[:len(plaintext)], plaintext)
-	xorGamma(c.block, counter, out[len(plaintext):], mac[:c.tagSize])
-	clear(counter)
+	gamma.XORKeyStream(out, plaintext)
+	gamma.XORKeyStream(out[len(plaintext):], mac[:c.tagSize])
+	gamma.wipe()
 	clear(mac)
 	return out, nil
 }
@@ -83,13 +83,12 @@ func (c *CCM) Open(nonce, ciphertext, additionalData []byte) ([]byte, error) {
 		return nil, err
 	}
 	nonceBlock := leftAlign(nonce, n)
-	counter := bytes.Clone(nonceBlock)
-	c.block.Encrypt(counter, counter)
+	gamma := c.keystream(nonceBlock)
 	plain := make([]byte, bodyLen)
-	xorGamma(c.block, counter, plain, ciphertext[:bodyLen])
+	gamma.XORKeyStream(plain, ciphertext[:bodyLen])
 	got := make([]byte, c.tagSize)
-	xorGamma(c.block, counter, got, ciphertext[bodyLen:])
-	clear(counter)
+	gamma.XORKeyStream(got, ciphertext[bodyLen:])
+	gamma.wipe()
 	want := c.sum(nonceBlock, additionalData, plain)
 	match := subtle.ConstantTimeCompare(want[:c.tagSize], got)
 	clear(want)
@@ -99,6 +98,14 @@ func (c *CCM) Open(nonce, ciphertext, additionalData []byte) ([]byte, error) {
 		return nil, ErrAuthentication
 	}
 	return plain, nil
+}
+
+// keystream is the counter keystream from E(nonce block). It runs over the
+// plaintext and then over the tag.
+func (c *CCM) keystream(nonceBlock []byte) *ctr {
+	counter := make([]byte, len(nonceBlock))
+	c.block.Encrypt(counter, nonceBlock)
+	return newCounter(c.block, counter)
 }
 
 // sum is the CBC-MAC over G1 (nonce, plaintext length, flags), the
@@ -122,11 +129,11 @@ func (c *CCM) sum(nonceBlock, additionalData, plaintext []byte) []byte {
 		} else {
 			subtle.XORBytes(mac, mac, g2)
 			c.block.Encrypt(mac, mac)
-			cbcMAC(c.block, mac, additionalData)
+			cbcMAC(c.block, mac, additionalData, 0)
 		}
 		clear(g2)
 	}
-	cbcMAC(c.block, mac, plaintext)
+	cbcMAC(c.block, mac, plaintext, 0x80)
 	return mac
 }
 
@@ -160,11 +167,17 @@ func ccmFlag(associatedData bool, tagSize, nb int) byte {
 	return flag
 }
 
-func cbcMAC(block cipher.Block, mac, data []byte) {
+// cbcMAC chains data into mac. A partial last block is padded with pad and
+// then zeros: 0 for the associated data, 0x80 for the plaintext, as the
+// examples of the standard and cryptonite pad it.
+func cbcMAC(block cipher.Block, mac, data []byte, pad byte) {
 	n := len(mac)
 	for off := 0; off < len(data); off += n {
 		end := min(off+n, len(data))
 		subtle.XORBytes(mac[:end-off], mac[:end-off], data[off:end])
+		if end-off < n {
+			mac[end-off] ^= pad
+		}
 		block.Encrypt(mac, mac)
 	}
 }
