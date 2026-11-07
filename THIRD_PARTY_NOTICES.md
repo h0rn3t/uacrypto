@@ -43,7 +43,10 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 `pki/testdata/jkurwa-store-a040.dat`, `jkurwa-key40a0.der` and `jkurwa-self-signed-enc-40a0.cer`
 are `STORE_A040.dat`, `Key40A0.pem` (decoded from PEM) and `SELF_SIGNED_ENC_40A0.cer` from the tests
 of jkurwa by Ilya Petrov (<https://github.com/dstucrypt/jkurwa>, `test/data`), version 1.22.9,
-published under the BSD license.
+published under the BSD license. The Key-6.dat and JKS readers of `pki/keystore.go` follow those of
+jkurwa (`lib/spec/keystore.js`, `lib/util/load.js`), gost89 0.1.12 (`lib/compat.js`, `lib/util.js`)
+and jksreader 1.0.0 (<https://github.com/dstucrypt/jksreader>), all of dstucrypt under the BSD
+license.
 
 ## li0ard/strumok
 

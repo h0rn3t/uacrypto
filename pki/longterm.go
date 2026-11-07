@@ -123,6 +123,19 @@ func AddValidationData(ctx context.Context, signed []byte, certs []*x509.Certifi
 	return sd.marshal()
 }
 
+// goodStatus returns an error unless resp says cert is good.
+func goodStatus(resp *OCSPResponse, cert *x509.Certificate) error {
+	switch resp.Status {
+	case OCSPGood:
+		return nil
+	case OCSPRevoked:
+		return fmt.Errorf("certificate %s was revoked at %v", cert.Subject, resp.RevokedAt)
+	case OCSPUnknown:
+		return fmt.Errorf("the OCSP responder does not know certificate %s", cert.Subject)
+	}
+	return fmt.Errorf("OCSP status %d of certificate %s", resp.Status, cert.Subject)
+}
+
 // validationData asks ocsp about every certificate of path but the root and
 // returns the CAdES-X Long attributes with references hashed by alg. The
 // responder is the issuer or carried in its response, so certValues holds
@@ -136,12 +149,8 @@ func validationData(ctx context.Context, path []*x509.Certificate, ocsp *OCSPCli
 		if err != nil {
 			return nil, err
 		}
-		switch resp.Status {
-		case OCSPGood:
-		case OCSPRevoked:
-			return nil, fmt.Errorf("pki: certificate %s was revoked at %v", cert.Subject, resp.RevokedAt)
-		case OCSPUnknown:
-			return nil, fmt.Errorf("pki: the OCSP responder does not know certificate %s", cert.Subject)
+		if err := goodStatus(resp, cert); err != nil {
+			return nil, fmt.Errorf("pki: %w", err)
 		}
 		var id ocspResponsesID
 		id.Identifier.ResponderID = asn1.RawValue{FullBytes: resp.responderID}

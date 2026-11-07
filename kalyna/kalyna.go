@@ -16,8 +16,8 @@
 //
 // The block cipher (encryption, decryption and key expansion) runs in constant
 // time on 64-bit platforms. The modes take no secret-dependent branches or
-// table lookups beyond the cipher, but the timing test covers only the block
-// cipher.
+// table lookups beyond the cipher; the timing test covers the cipher, CMAC,
+// GMAC, GCM tag checking, CCM, XTS and unwrapping.
 package kalyna
 
 import (

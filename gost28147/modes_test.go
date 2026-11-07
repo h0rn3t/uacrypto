@@ -118,6 +118,47 @@ func TestMAC(t *testing.T) {
 			t.Errorf("NewMAC(size %d) error = nil, want an error", size)
 		}
 	}
+	if _, err := NewMAC(make([]byte, 31), GOST34311ExampleSbox(), 4); err == nil {
+		t.Error("NewMAC(31-byte key) error = nil, want an error")
+	}
+}
+
+// A message that ends inside a block is padded with zero bytes. The MACs are
+// those gost89 0.1.12 (jkurwa) computes under ДКЕ №1.
+func TestMACPartialBlock(t *testing.T) {
+	tests := []struct{ msg, want string }{
+		{"0102030405060708090a0b0c0d", "12ac1591e5415c03"},
+		{"0102030405060708090a0b0c0d0e0f1011", "90db516165409514"},
+	}
+	for _, tt := range tests {
+		h, err := NewMAC(mustHex(t, modeKey), DKE1(), 8)
+		if err != nil {
+			t.Fatal(err)
+		}
+		h.Write(mustHex(t, tt.msg))
+		if got := h.Sum([]byte{0xff}); hex.EncodeToString(got) != "ff"+tt.want {
+			t.Errorf("MAC(%s) appended to ff = %x, want ff%s", tt.msg, got, tt.want)
+		}
+		if h.Size() != 8 || h.BlockSize() != BlockSize {
+			t.Errorf("Size(), BlockSize() = %d, %d, want 8, %d", h.Size(), h.BlockSize(), BlockSize)
+		}
+	}
+}
+
+func TestCTRErrors(t *testing.T) {
+	if _, err := NewCTR(nil, make([]byte, BlockSize)); err == nil {
+		t.Error("NewCTR(nil block) error = nil, want an error")
+	}
+	s, err := NewCTR(exampleCipher(t, modeKey), mustHex(t, modeIV))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if recover() == nil {
+			t.Error("XORKeyStream(3-byte dst, 4-byte src) did not panic, want a panic")
+		}
+	}()
+	s.XORKeyStream(make([]byte, 3), make([]byte, 4))
 }
 
 // The high word adds 0x01010104 modulo 2^32-1: a carry out of 32 bits comes

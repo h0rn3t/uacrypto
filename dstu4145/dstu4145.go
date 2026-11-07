@@ -17,8 +17,17 @@
 // (internal/ctcheck) on linux/amd64; 32-bit builds are correct but make no
 // such claim. Verify, ParsePublicKey, PublicKey.Bytes and CurveFromParams
 // handle public data only and are not constant-time. Power and fault attacks
-// and zeroization of key material are out of scope, and the package has not
-// been audited.
+// are out of scope, and the package has not been audited.
+//
+// PrivateKey.Destroy overwrites the private scalar. Copies the Go runtime made
+// earlier (a moved stack, a value copy of the key) are beyond its reach; built
+// with GOEXPERIMENT=runtimesecret, GenerateKey, NewPrivateKey, Sign and ECDH
+// run under runtime/secret, which erases their registers, stack and temporary
+// allocations on linux/amd64 and linux/arm64.
+//
+// NewPRNG is the pseudorandom generator of the certified cryptonite library,
+// built on GOST 28147-89, for callers that must use it instead of
+// crypto/rand.Reader.
 package dstu4145
 
 import (
@@ -35,6 +44,9 @@ type PublicKey struct {
 	q     point
 }
 
+// ErrKeyDestroyed is returned by Sign and ECDH for a key after Destroy.
+var ErrKeyDestroyed = errors.New("dstu4145: private key destroyed")
+
 // A PrivateKey is a DSTU 4145 private key d with its public key.
 type PrivateKey struct {
 	pub PublicKey
@@ -43,22 +55,28 @@ type PrivateKey struct {
 
 // GenerateKey returns a new key on curve c with d drawn uniformly from
 // [1, n-1] using random, normally crypto/rand.Reader.
-func GenerateKey(c *Curve, random io.Reader) (*PrivateKey, error) {
-	d, err := randomScalar(c, random)
-	if err != nil {
-		return nil, err
-	}
-	return newPrivateKey(c, d), nil
+func GenerateKey(c *Curve, random io.Reader) (k *PrivateKey, err error) {
+	secretDo(func() {
+		var d scalar
+		if d, err = randomScalar(c, random); err == nil {
+			k = newPrivateKey(c, d)
+		}
+	})
+	return k, err
 }
 
 // NewPrivateKey returns the key on curve c with the big-endian scalar d,
 // which must be in [1, n-1].
-func NewPrivateKey(c *Curve, d []byte) (*PrivateKey, error) {
-	k, ok := c.ord.fromBytes(d)
-	if !ok {
-		return nil, errors.New("dstu4145: private key out of range [1, n-1]")
-	}
-	return newPrivateKey(c, k), nil
+func NewPrivateKey(c *Curve, d []byte) (k *PrivateKey, err error) {
+	secretDo(func() {
+		s, ok := c.ord.fromBytes(d)
+		if !ok {
+			err = errors.New("dstu4145: private key out of range [1, n-1]")
+			return
+		}
+		k = newPrivateKey(c, s)
+	})
+	return k, err
 }
 
 func newPrivateKey(c *Curve, d scalar) *PrivateKey {
@@ -72,10 +90,22 @@ func (k *PublicKey) Curve() *Curve { return k.curve }
 func (k *PrivateKey) Public() *PublicKey { return &k.pub }
 
 // Bytes returns d as a big-endian integer padded to the byte length of n,
-// the form NewPrivateKey accepts.
+// the form NewPrivateKey accepts. It panics after Destroy.
 func (k *PrivateKey) Bytes() []byte {
+	if k.destroyed() {
+		panic(ErrKeyDestroyed)
+	}
 	return k.pub.curve.ord.bytes(&k.d)
 }
+
+// Destroy overwrites the private scalar d with zeros. Afterwards Sign and ECDH
+// return ErrKeyDestroyed, Bytes panics, and Public still works. It does not
+// reach copies of the key: a PrivateKey copied by value, the bytes Bytes
+// returned, or a key file the key came from.
+func (k *PrivateKey) Destroy() { clear(k.d[:]) }
+
+// destroyed reports whether Destroy was called: a valid d is never zero.
+func (k *PrivateKey) destroyed() bool { return k.d == scalar{} }
 
 // Bytes returns the compressed point in the DSTU 4145 encoding: x as a
 // big-endian field element whose lowest bit is replaced by Tr(y/x).
@@ -138,6 +168,14 @@ func ParsePublicKey(c *Curve, data []byte) (*PublicKey, error) {
 // per-signature secret. The hash is read as a little-endian integer, as
 // DSTU 4145 prescribes for GOST 34.311 digests; r and s are in [1, n-1].
 func Sign(random io.Reader, k *PrivateKey, hash []byte) (r, s *big.Int, err error) {
+	if k.destroyed() {
+		return nil, nil, ErrKeyDestroyed
+	}
+	secretDo(func() { r, s, err = sign(random, k, hash) })
+	return r, s, err
+}
+
+func sign(random io.Reader, k *PrivateKey, hash []byte) (r, s *big.Int, err error) {
 	c := k.pub.curve
 	h := c.hashToField(hash)
 	for {

@@ -153,8 +153,12 @@ func parseOCSPResponse(der []byte, serial *big.Int, issuer *x509.Certificate, ce
 
 	match := slices.IndexFunc(data.Responses, func(r singleResponse) bool {
 		want, err := newCertID(r.CertID.HashAlgorithm.Algorithm, serial, issuer)
-		return err == nil && r.CertID.Serial.Cmp(serial) == 0 &&
-			bytes.Equal(r.CertID.NameHash, want.NameHash) && bytes.Equal(r.CertID.KeyHash, want.KeyHash)
+		// IIT writes an all-zero issuerKeyHash in Kupyna XAdES B-LTA (ЦЗО
+		// example): read it as absent and match by the issuer name alone.
+		// The response signature is still checked against the issuer below.
+		keyHash := bytes.Equal(r.CertID.KeyHash, want.KeyHash) ||
+			len(r.CertID.KeyHash) == len(want.KeyHash) && !slices.ContainsFunc(r.CertID.KeyHash, func(b byte) bool { return b != 0 })
+		return err == nil && r.CertID.Serial.Cmp(serial) == 0 && bytes.Equal(r.CertID.NameHash, want.NameHash) && keyHash
 	})
 	if match < 0 {
 		return nil, nil, fmt.Errorf("%w %x of %s", errNoStatus, serial, issuer.Subject)

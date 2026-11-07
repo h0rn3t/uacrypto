@@ -23,8 +23,9 @@
 | [`kupyna`](https://pkg.go.dev/github.com/h0rn3t/uacrypto/kupyna) | ДСТУ 7564:2014 «Купина» — функція гешування | `hash.Hash` на 256, 384 і 512 біт; MAC з ключем (`NewMAC`) |
 | [`kalyna`](https://pkg.go.dev/github.com/h0rn3t/uacrypto/kalyna) | ДСТУ 7624:2014 «Калина» — блоковий шифр | `cipher.Block` з блоком 128, 256 і 512 біт; режими CTR, CFB, OFB, CBC, CMAC, GMAC, GCM, CCM, XTS і обгортання ключів — усі приклади стандарту, з неповними блоками |
 | [`strumok`](https://pkg.go.dev/github.com/h0rn3t/uacrypto/strumok) | ДСТУ 8845:2019 «Струмок» — потоковий шифр | `cipher.Stream` з ключем 256 і 512 біт; відтворює контрольні приклади стандарту |
-| [`pki`](https://pkg.go.dev/github.com/h0rn3t/uacrypto/pki) | X.509 і CMS з ДСТУ 4145 | ключ ДСТУ 4145 із сертифіката (явні параметри чи OID кривої, ДКЕ, le/be), РНОКПП і ЄДРПОУ власника, перевірка підпису сертифіката (ГОСТ 34.311, Купина-256, Купина-512), створення й перевірка CMS SignedData: файлів `.p7s` (CAdES-BES, CAdES-T і CAdES-X Long), контейнерів ASiC-S і ASiC-E з CAdES і позначок часу RFC 3161, клієнт TSP, клієнт OCSP і перевірка відповідей OCSP, перевірка CRL і статусу за повним і дельта-CRL; для ЦСК — випуск сертифікатів з іменами й розширеннями, як у ЦСК, PKCS#10, ключі PKCS#8 у форматах BC та ІІТ, ключові файли PKCS#12 і PKCS#8 з паролем (ГОСТ 28147, як у ІІТ), конверти CMS EnvelopedData, відповіді OCSP, CRL і позначки часу, пакети `.p7b` |
+| [`pki`](https://pkg.go.dev/github.com/h0rn3t/uacrypto/pki) | X.509 і CMS з ДСТУ 4145 | ключ ДСТУ 4145 із сертифіката (явні параметри чи OID кривої, ДКЕ, le/be), РНОКПП і ЄДРПОУ власника, перевірка підпису сертифіката (ГОСТ 34.311, Купина-256, Купина-512), створення й перевірка CMS SignedData: файлів `.p7s` (CAdES-BES, CAdES-T і CAdES-X Long), створення XAdES-B-B, B-T і B-LT (вбудованих і відокремлених) і перевірка XAdES (B-B, B-T, B-LT, B-LTA), контейнерів ASiC-S і ASiC-E з CAdES і XAdES, створення й перевірка PAdES у PDF, позначок часу RFC 3161, клієнт TSP, клієнт OCSP і перевірка відповідей OCSP, перевірка CRL і статусу за повним і дельта-CRL; для ЦСК — випуск сертифікатів з іменами й розширеннями, як у ЦСК, PKCS#10, ключі PKCS#8 у форматах BC та ІІТ, ключові файли PKCS#12 і PKCS#8 з паролем (ГОСТ 28147, як у ІІТ), читання Key-6.dat ІІТ і JKS ПриватБанку, конверти CMS EnvelopedData, відповіді OCSP, CRL і позначки часу, пакети `.p7b` |
 | [`gost28147`](https://pkg.go.dev/github.com/h0rn3t/uacrypto/gost28147) | ГОСТ 28147-89 — блоковий шифр | `cipher.Block`, гамування (`NewCTR`), гамування зі зворотним зв'язком (`cipher.NewCFBEncrypter`), імітовставка (`NewMAC`); ДКЕ №1 з додатків 1–10 до інструкції №114, тестова таблиця ГОСТ 34.311, розпакування й пакування ДКЕ |
+| [`gost3410`](https://pkg.go.dev/github.com/h0rn3t/uacrypto/gost3410) | ГОСТ Р 34.10-2001 / ГОСТ 34.310-2004 — цифровий підпис на еліптичних кривих (перенесено з cryptonite) | генерація ключів, підпис, перевірка, стиснений відкритий ключ; параметри кривої задає викликач (`NewCurve`), бо українського набору немає; не ГОСТ 34.310-95 |
 
 ## Встановлення
 
@@ -204,9 +205,72 @@ files, signers, err := pki.VerifyASiC(asice, certs) // лише файли, як
 Контейнери — як у ІІТ (ETSI EN 319 162-1): ASiC-S підписує сам файл (`META-INF/signature.p7s`), ASiC-E —
 маніфест `META-INF/ASiCManifest001.xml` з гешами файлів (Купина-256 або ГОСТ 34.311, URI
 `…xmlenc#dstu7564-256` і `…xmlenc#gost34311`, як пише ІІТ). Маніфест для того самого файла збігається з
-маніфестом ІІТ байт у байт; контейнери ЦЗО з CAdES-BES, T і X Long перевіряються. Файл, якого не перелічує
-жоден маніфест, `VerifyASiC` не повертає; змінений файл — `ErrInvalidSignature`. Контейнери з XAdES
-поки що не підтримуються (`errors.ErrUnsupported`).
+маніфестом ІІТ байт у байт; контейнери ЦЗО з CAdES-BES, T і X Long перевіряються. Файл, якого не покриває
+жоден підпис, `VerifyASiC` не повертає; змінений файл — `ErrInvalidSignature`. Контейнери з XAdES
+(`META-INF/signatures*.xml`) `VerifyASiC` перевіряє як `VerifyXAdES`.
+
+```go
+signXAdES := func(files []pki.ASiCFile) ([]byte, error) { // відокремлений XAdES; можна додати B-T і B-LT
+	sig, err := pki.SignXAdESDetached(rand.Reader, files, key, cert, pki.SignOptions{})
+	if err != nil {
+		return nil, err
+	}
+	return pki.AddXAdESSignatureTimeStamp(ctx, sig, tsa)
+}
+asics, err := pki.CreateASiCSXAdES(pki.ASiCFile{Name: "звіт.pdf", Data: pdf}, signXAdES)
+asice, err := pki.CreateASiCEXAdES([]pki.ASiCFile{{Name: "a.pdf", Data: a}, {Name: "b.xml", Data: b}}, signXAdES)
+```
+
+`CreateASiCSXAdES` і `CreateASiCEXAdES` кладуть підпис у `META-INF/signatures.xml` (ASiC-S) чи
+`META-INF/signatures001.xml` (ASiC-E) з коренем `asic:XAdESSignatures`; ASiC-E ще має маніфест OpenDocument
+`META-INF/manifest.xml`. Склад і порядок записів, маніфест (байт у байт) і розмітка підпису збігаються з
+контейнерами ЦЗО `DSTU/XAdES-B-B` (ASiC-S) і `DSTU-7564/XAdES-B-T` (ASiC-E).
+
+### Підписи XAdES
+
+```go
+doc, err := pki.SignXAdES(rand.Reader, doc, key, cert, pki.SignOptions{}) // підпис усередині документа
+sig, err := pki.SignXAdESDetached(rand.Reader, []pki.ASiCFile{{Name: "Test.xml", Data: data}}, key, cert, pki.SignOptions{})
+doc, err = pki.AddXAdESSignatureTimeStamp(ctx, doc, tsa) // B-T
+doc, err = pki.AddXAdESValidationData(ctx, doc, certs, &pki.OCSPClient{}) // B-LT
+signed, signers, err := pki.VerifyXAdES(doc, nil, certs) // вбудований підпис: signed == [""]
+signed, signers, err = pki.VerifyXAdES(sig, map[string][]byte{"Test.xml": data}, certs) // відокремлений
+```
+
+`VerifyXAdES` перевіряє підписи XAdES, як їх пише ІІТ: канонікалізація Exclusive XML C14N, ДСТУ 4145 з
+ГОСТ 34.311 або Купиною-256, сертифікат підписувача — за `SigningCertificateV2`. Позначку часу
+`SignatureTimeStamp` (B-T) перевіряє над канонічним `ds:SignatureValue`. З `CertificateValues` і
+`RevocationValues` (B-LT) будує `Signer.Chain` і `Signer.OCSP`, як для CAdES-X Long. `ArchiveTimeStamp`
+(B-LTA) не перевіряється. Документи з DOCTYPE і з повторним `Id` відхиляються, інші перетворення —
+`errors.ErrUnsupported`. Перевірено на зразках ЦЗО (B-B, B-T, B-LT, B-LTA; вбудовані, відокремлені й у
+ASiC) і на прикладах рекомендацій W3C щодо канонікалізації.
+
+`SignXAdES` дописує XAdES-B-B останнім дочірнім елементом кореня документа, `SignXAdESDetached` повертає
+відокремлений підпис файлів; розмітка — як у ІІТ (без змінних значень збігається зі зразками ЦЗО байт у байт).
+`AddXAdESSignatureTimeStamp` робить з B-B підпис B-T: просить TSA позначити канонічний `ds:SignatureValue`
+(геш — алгоритм підпису) і дописує `UnsignedProperties` із `SignatureTimeStamp`. `AddXAdESValidationData`
+робить з B-T підпис B-LT: будує шлях до кореня з `certs`, питає OCSP про сертифікат підписувача і дописує
+`CertificateValues` (ЦСК, корінь і сертифікат OCSP-сервера, якщо це не ЦСК) та `RevocationValues` з
+відповіддю — як у зразку ЦЗО, без відповідей про ЦСК. Відкликаний чи невідомий сертифікат — помилка.
+Розмітка B-T і B-LT без змінних значень збігається зі зразками ЦЗО байт у байт. Мітку архіву (B-LTA) пакет
+не створює.
+
+### Підписи PAdES
+
+```go
+signed, err := pki.SignPAdES(ctx, rand.Reader, pdf, key, cert, pki.SignOptions{}, nil) // B-B; з tsa — B-T
+sigs, err := pki.VerifyPAdES(signed, certs) // кожен підпис і позначка часу документа
+```
+
+`VerifyPAdES` перевіряє підписи PDF (ETSI EN 319 142), як їх пише ІІТ: CAdES з `/SubFilter`
+`ETSI.CAdES.detached` чи `adbe.pkcs7.detached` над `/ByteRange` — як `VerifySignedData`, позначку часу
+документа `ETSI.RFC3161` (B-LTA) — як `VerifyTimeStamp`. `/ByteRange` має починатися з нуля й оминати рівно
+`/Contents` свого підпису; `CoversDocument` каже, чи підпис покриває файл до кінця, без пізніших оновлень.
+Сертифікати й відповіді OCSP зі сховища `/DSS` (і його `/VRI`) будують `Signer.Chain` і `Signer.OCSP`, як для
+CAdES-X Long; CRL з DSS не читаються. Час підпису — `/M`: PAdES не має атрибута `signingTime`. Перевірено на
+зразках ЦЗО (B-B, B-T, B-LT, B-LTA, ГОСТ 34.311 і Купина-256). `SignPAdES` дописує інкрементне оновлення, як
+ІІТ: поле підпису в `/AcroForm` з `/SigFlags 3` і CAdES без `signingTime` у `/Contents` на 10240 байтів.
+PDF із потоками перехресних посилань (без класичної таблиці) і зашифровані — `errors.ErrUnsupported`.
 
 ### Статус сертифіката (OCSP)
 
@@ -310,9 +374,32 @@ AKI самопідписаного — його SKI, розширене приз
 ```go
 d := key.Bytes()                               // big-endian, довжина порядку кривої
 restored, err := dstu4145.NewPrivateKey(curve, d)
+
+key.Destroy() // затирає скаляр d; далі Sign і ECDH повертають ErrKeyDestroyed
 ```
 
-### Ключові файли (PKCS#12, PKCS#8 з паролем)
+### Генератор ДСТУ (як у cryptonite)
+
+Сертифікована бібліотека cryptonite генерує ключі й підписує лише з власним генератором
+псевдовипадкових чисел (`PRNG_MODE_DSTU`): ГОСТ 28147-89 з ДКЕ №1 у режимі простої заміни,
+у стан домішується зашифрований час засівання. `dstu4145.NewPRNG` — той самий генератор як
+`io.Reader`, для тих, кому він потрібен замість `crypto/rand`:
+
+```go
+seed := make([]byte, dstu4145.SeedSize) // 40 байтів: ключ ГОСТ 28147 і початковий стан
+rand.Read(seed)                         // або апаратне джерело випадковості
+prng, _ := dstu4145.NewPRNG(seed)
+prng.Seed(extra)                        // домішати ще випадковості, як prng_seed cryptonite
+
+key, _ := dstu4145.GenerateKey(curve, prng)
+r, s, _ := dstu4145.Sign(prng, key, digest[:])
+```
+
+Вихід збігається з cryptonite байт у байт за того самого сіда й часу: звірка
+`make -C parity cryptonite` збирає C-код cryptonite з підставленим годинником. `PRNG` не безпечний для
+одночасного використання з кількох горутин.
+
+### Ключові файли (PKCS#12, PKCS#8 з паролем, Key-6.dat, JKS)
 
 ```go
 pfx, err := pki.DecodePFX(data, password)     // .pfx/.p12 від ІІТ чи cryptonite; pki.ErrIncorrectPassword
@@ -322,6 +409,9 @@ data, err = pki.EncodePFX(rand.Reader, pfx, newPassword, 10000) // зміна п
 pkcs8, err := pki.DecryptPKCS8PrivateKey(encrypted, password) // EncryptedPrivateKeyInfo, як у ІІТ і jkurwa
 key, err = pki.ParsePKCS8PrivateKey(pkcs8)                     // і запис ІІТ: d little-endian
 agreement, err := pki.ParsePKCS8KeyAgreementKey(pkcs8)         // ключ узгодження ІІТ з атрибутів
+
+store, err := pki.DecodeIITKey6(data, password) // Key-6.dat від ІІТ: PBES2 або старе сховище ІІТ
+store, err = pki.DecodeJKS(data, password)      // .jks від ПриватБанку: ключі й сертифікати сховища
 ```
 
 Пароль захищає ключ так, як у ІІТ і cryptonite: PBES2, PBKDF2 на HMAC ГОСТ 34.311 і ГОСТ 28147-89 у
@@ -329,8 +419,19 @@ agreement, err := pki.ParsePKCS8KeyAgreementKey(pkcs8)         // ключ уз�
 у PKCS#8 — сам `d` little-endian, а не `ECPrivateKey`, як у Bouncy Castle; другий ключ, для
 узгодження (конвертів), ІІТ кладе в атрибут `1.3.6.1.4.1.19398.1.1.2.3` з оберненим порядком бітів.
 `EncodePFX` пише ключі в записі ІІТ з OID кривої, тож ключі на кривих з явними параметрами не
-зберігає. Перевірено на PFX ІІТ з тестів cryptonite і на ключі `STORE_A040` з тестів jkurwa
-(шифрування відтворюється байт у байт).
+зберігає; кожен ключ і сертифікат ключа позначає `localKeyID` (SKI ключа), як ІІТ. Перевірено на PFX ІІТ
+з тестів cryptonite і на ключі `STORE_A040` з тестів jkurwa (шифрування відтворюється байт у байт).
+
+Key-6.dat ІІТ буває у двох видах: EncryptedPrivateKeyInfo з PBES2, як у `DecryptPKCS8PrivateKey`, і
+старе сховище ІІТ (`1.3.6.1.4.1.19398.1.1.1.2`) — ГОСТ 28147-89 у режимі простої заміни з ДКЕ №1 на
+ключі, який дає ГОСТ 34.311, застосований 10000 разів до пароля; його 4-байтове контрольне значення,
+як і jkurwa, не перевіряємо. JKS — сховище Java, у якому ПриватБанк видає ключі ДСТУ 4145: пароль
+(UTF-16BE) перевіряє дайджест сховища і знімає захист кожного ключа (SHA-1, OID
+`1.3.6.1.4.1.42.2.17.1.1`); сертифікати повертаються в порядку сховища, разом з довіреними. Обидві
+функції повертають `PFX` з ключем і ключем узгодження ІІТ, хибний пароль — `pki.ErrIncorrectPassword`.
+Логіку перенесено з jkurwa, gost89 і jksreader; перевірено на сховищах, які записали jkurwa/gost89,
+OpenJDK з ключем Bouncy Castle і ua-cryptography-pki (Rust) — справжніх файлів ІІТ і ПриватБанку серед
+тестових даних немає.
 
 ### Конверти (CMS EnvelopedData)
 
@@ -493,7 +594,9 @@ h, err := gost34311.NewWithSbox(sbox)
   порядку кривої без гілок;
 - «Калина»: розгортання ключа, шифрування і розшифрування блокового шифру; режими
   (CTR, CFB, CMAC, GMAC, GCM, CCM, XTS, обгортання ключа) — без розгалужень і звернень до таблиць за
-  секретом поза самим шифром, але окремо часовим тестом не перевіряються;
+  секретом поза самим шифром; часовий тест охоплює CMAC, GMAC, перевірку тега GCM, CCM, XTS і
+  `Unwrap`. GHASH виконується з прапорцем DIT процесора
+  (`subtle.WithDataIndependentTiming`): без нього ядра Apple M рахують нульові дані помітно швидше;
 - «Купина»: функція стиснення;
 - ГОСТ 28147-89: раунд шифру; гамування й імітовставка — без розгалужень за секретом поза раундом;
 - ГОСТ 34.311 (хеш): через раунд ГОСТ 28147, окремо часовим тестом не перевіряється;
@@ -506,7 +609,7 @@ h, err := gost34311.NewWithSbox(sbox)
 Це перевіряє статистичний тест dudect (`internal/ctcheck`): у CI він запускається на
 linux/amd64 і блокує випуск релізу. Локально:
 `go test -tags ctcheck -count=1 -timeout 60m ./internal/ctcheck`; результат надійний
-на linux/amd64. Тест охоплює представників: ДСТУ 4145 M257, «Калина-128», «Купина-256»,
+на linux/amd64. Тест охоплює представників: ДСТУ 4145 M257, «Калина-128» з режимами, «Купина-256»,
 ГОСТ 28147 з ДКЕ1; контрольний зразок `big.Int.Exp` має провалити тест. 32-розрядні
 збірки дають правильні результати, але сталий час для них не заявляється і не
 перевіряється.
@@ -514,8 +617,14 @@ linux/amd64 і блокує випуск релізу. Локально:
 Сталий час не заявляється для `Verify`, `ParsePublicKey`, `PublicKey.Bytes`,
 `CurveFromParams`, а також для розбору і перевірки в `pki`: вони працюють з відкритими
 даними. Підпис у `pki` виконує той самий сталочасовий `Sign`.
-Поза межами захисту: атаки за енергоспоживанням і збої (fault), занулення ключового
-матеріалу в пам'яті.
+Поза межами захисту: атаки за енергоспоживанням і збої (fault).
+
+Затирання ключів: `PrivateKey.Destroy` перезаписує скаляр ДСТУ 4145 нулями. Копій, які
+раніше зробило середовище Go (перенесений стек, копія ключа за значенням, байти з `Bytes`,
+ключовий файл), він не досягає. Зібрані з `GOEXPERIMENT=runtimesecret` (Go 1.26+),
+`GenerateKey`, `NewPrivateKey`, `Sign` і `ECDH` виконуються в `runtime/secret.Do`: регістри,
+стек і тимчасові алокації затираються після виклику. Діє на linux/amd64 і linux/arm64, на
+інших платформах експеримент нічого не робить.
 
 Код не проходив аудиту. Для кваліфікованого електронного підпису використовуйте
 сертифіковані засоби КЗІ.

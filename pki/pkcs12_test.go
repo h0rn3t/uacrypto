@@ -2,10 +2,14 @@ package pki_test
 
 import (
 	"bytes"
+	"crypto/cipher"
+	"crypto/pbkdf2"
 	"crypto/rand"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/asn1"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -13,6 +17,7 @@ import (
 
 	"github.com/h0rn3t/uacrypto/dstu4145"
 	"github.com/h0rn3t/uacrypto/gost28147"
+	"github.com/h0rn3t/uacrypto/gost34311"
 	"github.com/h0rn3t/uacrypto/pki"
 )
 
@@ -75,6 +80,19 @@ func TestParsePKCS8PrivateKeyIIT(t *testing.T) {
 	}
 	if !bytes.Equal(key.Public().Bytes(), pub.Key.Bytes()) {
 		t.Errorf("ParsePKCS8PrivateKey(Key40A0) public key = %x, want the certificate's %x", key.Public().Bytes(), pub.Key.Bytes())
+	}
+
+	var zero struct {
+		Version    int
+		Algorithm  asn1.RawValue
+		PrivateKey []byte
+	}
+	if _, err := asn1.Unmarshal(readTestdata(t, "jkurwa-key40a0.der"), &zero); err != nil {
+		t.Fatal(err)
+	}
+	zero.PrivateKey = make([]byte, len(zero.PrivateKey))
+	if _, err := pki.ParsePKCS8PrivateKey(mustMarshal(t, zero)); err == nil {
+		t.Error("ParsePKCS8PrivateKey(IIT key with d = 0) error = nil, want error")
 	}
 }
 
@@ -157,6 +175,25 @@ func TestDecodePFXIIT(t *testing.T) {
 	if _, err := pki.DecodePFX(tampered, "123456"); err == nil {
 		t.Error("DecodePFX(tampered content) error = nil, want error")
 	}
+
+	// The attributes IIT wrote on the two key bags of the file: a SET with
+	// localKeyID, an OCTET STRING of 32 bytes, as read from the file.
+	again, err := pki.EncodePFX(rand.Reader, pfx, "123456", 1)
+	if err != nil {
+		t.Fatalf("EncodePFX(keys of iit-123456.pfx) error = %v", err)
+	}
+	for _, id := range []string{
+		"4b269ac55f477b40d8c8b7282b72a48e7aea4c609396532d24f7e89a127f357c",
+		"46129181c259c5abe7efd2612cfe4e02508ccdde13f3d0c327ced8b8824380ed",
+	} {
+		attr := mustHex(t, "3131302f06092a864886f70d010915312204"+"20"+id)
+		if !bytes.Contains(data, attr) {
+			t.Fatalf("iit-123456.pfx has no localKeyID %s", id)
+		}
+		if !bytes.Contains(again, attr) {
+			t.Errorf("EncodePFX(keys of iit-123456.pfx) has no localKeyID %s, as IIT writes", id)
+		}
+	}
 }
 
 func TestEncodePFX(t *testing.T) {
@@ -186,6 +223,11 @@ func TestEncodePFX(t *testing.T) {
 	if len(out.Certificates) != 1 || !out.Certificates[0].Equal(cert) {
 		t.Errorf("DecodePFX(EncodePFX()) certificates = %v, want the certificate", out.Certificates)
 	}
+	// The key bag and the certificate bag are tied by the same localKeyID,
+	// the SKI of the certificate.
+	if attr := append(mustHex(t, "302f06092a864886f70d010915312204"+"20"), cert.SubjectKeyId...); bytes.Count(data, attr) != 2 {
+		t.Errorf("EncodePFX() has localKeyID %x %d times, want on the key and the certificate", cert.SubjectKeyId, bytes.Count(data, attr))
+	}
 	if _, err := pki.DecodePFX(data, "парол"); !errors.Is(err, pki.ErrIncorrectPassword) {
 		t.Errorf("DecodePFX(EncodePFX(), wrong password) error = %v, want %v", err, pki.ErrIncorrectPassword)
 	}
@@ -194,8 +236,382 @@ func TestEncodePFX(t *testing.T) {
 	if err != nil || !bytes.Equal(got.Bytes(), key.Bytes()) {
 		t.Errorf("KeyFor(certificate of the second key) = %v, %v, want the second key", got, err)
 	}
+	if _, err := out.KeyFor(newECDSACert(t)); err == nil {
+		t.Error("KeyFor(ECDSA certificate) error = nil, want error")
+	}
 	stranger := &pki.PFX{Keys: []*dstu4145.PrivateKey{other}}
 	if _, err := stranger.KeyFor(cert); err == nil {
 		t.Error("KeyFor(certificate of no key) error = nil, want error")
+	}
+}
+
+// testPBES2 mirrors the PBES2 parameters of IIT key files.
+type testPBES2 struct {
+	KDF struct {
+		Algorithm asn1.ObjectIdentifier
+		Params    struct {
+			Salt       []byte
+			Iterations int
+			KeyLength  int `asn1:"optional"`
+			PRF        pkix.AlgorithmIdentifier
+		}
+	}
+	Scheme struct {
+		Algorithm asn1.ObjectIdentifier
+		Params    struct {
+			IV  []byte
+			DKE []byte `asn1:"optional"`
+		}
+	}
+}
+
+type testEncryptedKey struct {
+	Algorithm pkix.AlgorithmIdentifier
+	Data      []byte
+}
+
+// editPBES2 returns the EncryptedPrivateKeyInfo der after edit has changed
+// its PBES2 parameters and encrypted data.
+func editPBES2(t *testing.T, der []byte, edit func(p *testPBES2, data *[]byte)) []byte {
+	t.Helper()
+	var info testEncryptedKey
+	if _, err := asn1.Unmarshal(der, &info); err != nil {
+		t.Fatal(err)
+	}
+	var p testPBES2
+	if _, err := asn1.Unmarshal(info.Algorithm.Parameters.FullBytes, &p); err != nil {
+		t.Fatal(err)
+	}
+	edit(&p, &info.Data)
+	info.Algorithm.Parameters = asn1.RawValue{FullBytes: mustMarshal(t, p)}
+	return mustMarshal(t, info)
+}
+
+// The forms take one PBKDF2 iteration, the key of the jkurwa store
+// encrypted again, so that the test stays fast.
+func TestDecryptPKCS8PrivateKeyForms(t *testing.T) {
+	store := readTestdata(t, "jkurwa-store-a040.dat")
+	want := readTestdata(t, "jkurwa-key40a0.der")
+	reencrypt := func(gamma bool) func(p *testPBES2, data *[]byte) {
+		return func(p *testPBES2, data *[]byte) {
+			p.KDF.Params.Iterations = 1
+			key, err := pbkdf2.Key(gost34311.New, "password", p.KDF.Params.Salt, 1, 32)
+			if err != nil {
+				t.Fatal(err)
+			}
+			block, err := gost28147.NewCipher(key, gost28147.DKE1())
+			if err != nil {
+				t.Fatal(err)
+			}
+			stream := cipher.NewCFBEncrypter(block, p.Scheme.Params.IV) //nolint:staticcheck // SA1019: the mode of the key files
+			if gamma {
+				if stream, err = gost28147.NewCTR(block, p.Scheme.Params.IV); err != nil {
+					t.Fatal(err)
+				}
+				p.Scheme.Algorithm = asn1.ObjectIdentifier{1, 2, 804, 2, 1, 1, 1, 1, 1, 1, 2}
+			} else {
+				p.Scheme.Params.DKE = nil
+			}
+			*data = make([]byte, len(want))
+			stream.XORKeyStream(*data, want)
+		}
+	}
+	tests := []struct {
+		name string
+		der  []byte
+	}{
+		{"ДКЕ №1 implied", editPBES2(t, store, reencrypt(false))},
+		{"gamma mode", editPBES2(t, store, reencrypt(true))},
+	}
+	for _, tt := range tests {
+		got, err := pki.DecryptPKCS8PrivateKey(tt.der, "password")
+		if err != nil || !bytes.Equal(got, want) {
+			t.Errorf("DecryptPKCS8PrivateKey(%s) = %x, %v, want %x", tt.name, got, err, want)
+		}
+	}
+}
+
+func TestDecryptPKCS8PrivateKeyMalformed(t *testing.T) {
+	store := readTestdata(t, "jkurwa-store-a040.dat")
+	edit := func(f func(p *testPBES2)) []byte {
+		return editPBES2(t, store, func(p *testPBES2, _ *[]byte) {
+			p.KDF.Params.Iterations = 1 // a case fails before or after PBKDF2, never on its result
+			f(p)
+		})
+	}
+	oid := asn1.ObjectIdentifier{1, 2, 3}
+	tests := []struct {
+		name string
+		der  []byte
+	}{
+		{"truncated", store[:len(store)-1]},
+		{"not PBES2", mustMarshal(t, testEncryptedKey{pkix.AlgorithmIdentifier{Algorithm: oid}, []byte{1}})},
+		{"malformed PBES2 parameters", mustMarshal(t, testEncryptedKey{pkix.AlgorithmIdentifier{
+			Algorithm: asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 5, 13}, Parameters: asn1.NullRawValue}, []byte{1}})},
+		{"another key derivation", edit(func(p *testPBES2) { p.KDF.Algorithm = oid })},
+		{"another PRF", edit(func(p *testPBES2) { p.KDF.Params.PRF.Algorithm = oid })},
+		{"0 iterations", edit(func(p *testPBES2) { p.KDF.Params.Iterations = 0 })},
+		{"2^24+1 iterations", edit(func(p *testPBES2) { p.KDF.Params.Iterations = 1<<24 + 1 })},
+		{"another cipher", edit(func(p *testPBES2) { p.Scheme.Algorithm = oid })},
+		{"IV of 7 bytes", edit(func(p *testPBES2) { p.Scheme.Params.IV = p.Scheme.Params.IV[:7] })},
+		{"malformed DKE", edit(func(p *testPBES2) { p.Scheme.Params.DKE = []byte{1, 2, 3} })},
+	}
+	for _, tt := range tests {
+		if got, err := pki.DecryptPKCS8PrivateKey(tt.der, "password"); err == nil {
+			t.Errorf("DecryptPKCS8PrivateKey(%s) = %x, want error", tt.name, got)
+		}
+	}
+}
+
+type testAttribute struct {
+	Type   asn1.ObjectIdentifier
+	Values []asn1.RawValue `asn1:"set"`
+}
+
+// withAttributes returns the PKCS#8 key der with attrs as its attributes.
+func withAttributes(t *testing.T, der []byte, attrs []testAttribute) []byte {
+	t.Helper()
+	var key struct {
+		Version    int
+		Algorithm  asn1.RawValue
+		PrivateKey []byte
+	}
+	if _, err := asn1.Unmarshal(der, &key); err != nil {
+		t.Fatal(err)
+	}
+	return mustMarshal(t, struct {
+		Version    int
+		Algorithm  asn1.RawValue
+		PrivateKey []byte
+		Attributes []testAttribute `asn1:"optional,tag:0,set"`
+	}{key.Version, key.Algorithm, key.PrivateKey, attrs})
+}
+
+func TestParsePKCS8KeyAgreementKeyMalformed(t *testing.T) {
+	key := readTestdata(t, "jkurwa-key40a0.der")
+	keyOID := asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 19398, 1, 1, 2, 3}
+	curveOID := asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 19398, 1, 1, 2, 2}
+	attr := func(oid asn1.ObjectIdentifier, values ...[]byte) testAttribute {
+		a := testAttribute{Type: oid}
+		for _, v := range values {
+			a.Values = append(a.Values, asn1.RawValue{FullBytes: v})
+		}
+		return a
+	}
+	bits := func(b []byte) []byte { return mustMarshal(t, asn1.BitString{Bytes: b, BitLength: 8 * len(b)}) }
+	curve6 := mustMarshal(t, struct{ Curve asn1.ObjectIdentifier }{asn1.ObjectIdentifier{1, 2, 804, 2, 1, 1, 1, 1, 3, 1, 1, 2, 6}})
+	tests := []struct {
+		name string
+		der  []byte
+	}{
+		{"not PKCS#8", mustMarshal(t, 5)},
+		{"key bits as an INTEGER", withAttributes(t, key, []testAttribute{attr(keyOID, mustMarshal(t, 5)), attr(curveOID, curve6)})},
+		{"two values, so no key", withAttributes(t, key, []testAttribute{attr(keyOID, bits([]byte{1}), bits([]byte{2})), attr(curveOID, curve6)})},
+		{"curve parameters as an INTEGER", withAttributes(t, key, []testAttribute{attr(keyOID, bits([]byte{1})), attr(curveOID, mustMarshal(t, 5))})},
+		{"unknown curve", withAttributes(t, key, []testAttribute{attr(keyOID, bits([]byte{1})),
+			attr(curveOID, mustMarshal(t, struct{ Curve asn1.ObjectIdentifier }{asn1.ObjectIdentifier{1, 2, 3}}))})},
+		{"d = 0", withAttributes(t, key, []testAttribute{attr(keyOID, bits(make([]byte, 32))), attr(curveOID, curve6)})},
+	}
+	for _, tt := range tests {
+		if got, err := pki.ParsePKCS8KeyAgreementKey(tt.der); err == nil {
+			t.Errorf("ParsePKCS8KeyAgreementKey(%s) = %v, want error", tt.name, got)
+		}
+	}
+}
+
+// testContentInfo is a ContentInfo of the AuthenticatedSafe of a PFX.
+type testContentInfo struct {
+	ContentType asn1.ObjectIdentifier
+	Content     asn1.RawValue // the whole [0] element
+}
+
+var (
+	oidTestData          = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 7, 1}
+	oidTestEncryptedData = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 7, 6}
+	oidTestShroudedKey   = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 12, 10, 1, 2}
+	oidTestCertBag       = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 12, 10, 1, 3}
+	oidTestX509Cert      = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 9, 22, 1}
+)
+
+// pfxWithoutMAC returns a PFX without a MAC whose AuthenticatedSafe holds
+// contents.
+func pfxWithoutMAC(t *testing.T, contents ...testContentInfo) []byte {
+	t.Helper()
+	return mustMarshal(t, struct {
+		Version  int
+		AuthSafe testContentInfo
+	}{3, testContentInfo{oidTestData, contextTag(0, mustMarshal(t, mustMarshal(t, contents)))}})
+}
+
+// dataContent returns the ContentInfo of type data with SafeContents der.
+func dataContent(t *testing.T, der []byte) testContentInfo {
+	t.Helper()
+	return testContentInfo{oidTestData, contextTag(0, mustMarshal(t, der))}
+}
+
+// encryptedContent returns the ContentInfo of type encryptedData with
+// SafeContents der encrypted under password.
+func encryptedContent(t *testing.T, der []byte, password string) testContentInfo {
+	t.Helper()
+	encrypted, err := pki.EncryptPKCS8PrivateKey(rand.Reader, der, password, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var info testEncryptedKey
+	if _, err := asn1.Unmarshal(encrypted, &info); err != nil {
+		t.Fatal(err)
+	}
+	return testContentInfo{oidTestEncryptedData, contextTag(0, mustMarshal(t, struct {
+		Version int
+		Info    struct {
+			ContentType asn1.ObjectIdentifier
+			Algorithm   pkix.AlgorithmIdentifier
+			Content     asn1.RawValue
+		}
+	}{Info: struct {
+		ContentType asn1.ObjectIdentifier
+		Algorithm   pkix.AlgorithmIdentifier
+		Content     asn1.RawValue
+	}{oidTestData, info.Algorithm, asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: 0, Bytes: info.Data}}}))}
+}
+
+// safeBags returns SafeContents of bags, each an OID and its value.
+func safeBags(t *testing.T, bags ...testContentInfo) []byte {
+	t.Helper()
+	return mustMarshal(t, bags)
+}
+
+func certBag(t *testing.T, oid asn1.ObjectIdentifier, value []byte) testContentInfo {
+	t.Helper()
+	return testContentInfo{oidTestCertBag, contextTag(0, mustMarshal(t, struct {
+		ID    asn1.ObjectIdentifier
+		Value asn1.RawValue
+	}{oid, contextTag(0, mustMarshal(t, value))}))}
+}
+
+func shroudedKey(t *testing.T, pkcs8 []byte, password string) testContentInfo {
+	t.Helper()
+	encrypted, err := pki.EncryptPKCS8PrivateKey(rand.Reader, pkcs8, password, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return testContentInfo{oidTestShroudedKey, contextTag(0, encrypted)}
+}
+
+func TestDecodePFXForms(t *testing.T) {
+	cert := readCert(t, "czo-2020.der")
+	tests := []struct {
+		name      string
+		data      []byte
+		wantKeys  int
+		wantCerts int
+	}{
+		{"certificate in encrypted SafeContents", pfxWithoutMAC(t,
+			encryptedContent(t, safeBags(t, certBag(t, oidTestX509Cert, cert.Raw)), "пароль")), 0, 1},
+		{"certificate of another kind skipped", pfxWithoutMAC(t,
+			dataContent(t, safeBags(t, certBag(t, asn1.ObjectIdentifier{1, 2, 3}, []byte{1})))), 0, 0},
+		{"IIT key with a key agreement key", pfxWithoutMAC(t,
+			dataContent(t, safeBags(t, shroudedKey(t, withAttributes(t, readTestdata(t, "jkurwa-key40a0.der"), []testAttribute{
+				{asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 19398, 1, 1, 2, 3}, []asn1.RawValue{{FullBytes: mustMarshal(t, asn1.BitString{Bytes: []byte{0x80}, BitLength: 8})}}},
+				{asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 19398, 1, 1, 2, 2}, []asn1.RawValue{{FullBytes: mustMarshal(t,
+					struct{ Curve asn1.ObjectIdentifier }{asn1.ObjectIdentifier{1, 2, 804, 2, 1, 1, 1, 1, 3, 1, 1, 2, 6}})}}},
+			}), "пароль")))), 2, 0},
+		{"IIT key with no key agreement key", pfxWithoutMAC(t,
+			dataContent(t, safeBags(t, shroudedKey(t, readTestdata(t, "jkurwa-key40a0.der"), "пароль")))), 1, 0},
+	}
+	for _, tt := range tests {
+		pfx, err := pki.DecodePFX(tt.data, "пароль")
+		if err != nil || len(pfx.Keys) != tt.wantKeys || len(pfx.Certificates) != tt.wantCerts {
+			t.Errorf("DecodePFX(%s) = %+v, %v, want %d keys and %d certificates", tt.name, pfx, err, tt.wantKeys, tt.wantCerts)
+		}
+	}
+	if pfx, err := pki.DecodePFX(tests[0].data, "пароль"); err == nil && !pfx.Certificates[0].Equal(cert) {
+		t.Errorf("DecodePFX(%s) certificate = %v, want %v", tests[0].name, pfx.Certificates[0].Subject, cert.Subject)
+	}
+}
+
+func TestDecodePFXMalformed(t *testing.T) {
+	iit := readTestdata(t, "iit-123456.pfx")
+	key := readTestdata(t, "jkurwa-key40a0.der")
+	withMAC := func(alg asn1.ObjectIdentifier, iterations int) []byte {
+		return mustMarshal(t, struct {
+			Version  int
+			AuthSafe testContentInfo
+			MacData  struct {
+				Mac struct {
+					Algorithm pkix.AlgorithmIdentifier
+					Digest    []byte
+				}
+				Salt       []byte
+				Iterations int
+			}
+		}{Version: 3, AuthSafe: testContentInfo{oidTestData, contextTag(0, mustMarshal(t, mustMarshal(t, []testContentInfo{})))},
+			MacData: struct {
+				Mac struct {
+					Algorithm pkix.AlgorithmIdentifier
+					Digest    []byte
+				}
+				Salt       []byte
+				Iterations int
+			}{Mac: struct {
+				Algorithm pkix.AlgorithmIdentifier
+				Digest    []byte
+			}{pkix.AlgorithmIdentifier{Algorithm: alg}, make([]byte, 32)}, Salt: make([]byte, 32), Iterations: iterations}})
+	}
+	gost34311 := asn1.ObjectIdentifier{1, 2, 804, 2, 1, 1, 1, 1, 2, 1}
+	agreementWithoutCurve := withAttributes(t, key, []testAttribute{{Type: asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 19398, 1, 1, 2, 3},
+		Values: []asn1.RawValue{{FullBytes: mustMarshal(t, asn1.BitString{Bytes: []byte{1}, BitLength: 8})}}}})
+	tests := []struct {
+		name string
+		data []byte
+	}{
+		{"truncated", iit[:10]},
+		{"not a PFX", mustMarshal(t, 5)},
+		{"content not data", mustMarshal(t, struct {
+			Version  int
+			AuthSafe testContentInfo
+		}{3, testContentInfo{asn1.ObjectIdentifier{1, 2, 3}, contextTag(0, mustMarshal(t, []byte{}))}})},
+		{"MAC on SHA-256", withMAC(asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 2, 1}, 1)},
+		{"MAC with 0 iterations", withMAC(gost34311, 0)},
+		{"MAC with 2^24+1 iterations", withMAC(gost34311, 1<<24+1)},
+		{"AuthenticatedSafe not a SEQUENCE", mustMarshal(t, struct {
+			Version  int
+			AuthSafe testContentInfo
+		}{3, testContentInfo{oidTestData, contextTag(0, mustMarshal(t, mustMarshal(t, 5)))}})},
+		{"data content not an OCTET STRING", pfxWithoutMAC(t, testContentInfo{oidTestData, contextTag(0, mustMarshal(t, 5))})},
+		{"malformed EncryptedData", pfxWithoutMAC(t, testContentInfo{oidTestEncryptedData, contextTag(0, mustMarshal(t, 5))})},
+		{"EncryptedData under another password", pfxWithoutMAC(t, encryptedContent(t, safeBags(t), "інший"))},
+		{"content of another type", pfxWithoutMAC(t, testContentInfo{asn1.ObjectIdentifier{1, 2, 3}, contextTag(0, mustMarshal(t, 5))})},
+		{"SafeContents not a SEQUENCE", pfxWithoutMAC(t, dataContent(t, mustMarshal(t, 5)))},
+		{"key under another password", pfxWithoutMAC(t, dataContent(t, safeBags(t, shroudedKey(t, key, "інший"))))},
+		{"key not DSTU 4145", pfxWithoutMAC(t, dataContent(t, safeBags(t, shroudedKey(t, mustMarshal(t, struct{ A int }{1}), "пароль"))))},
+		{"key agreement key without a curve", pfxWithoutMAC(t, dataContent(t, safeBags(t, shroudedKey(t, agreementWithoutCurve, "пароль"))))},
+		{"malformed CertBag", pfxWithoutMAC(t, dataContent(t, safeBags(t, testContentInfo{oidTestCertBag, contextTag(0, mustMarshal(t, 5))})))},
+		{"malformed certificate", pfxWithoutMAC(t, dataContent(t, safeBags(t, certBag(t, oidTestX509Cert, []byte{0x30, 0}))))},
+	}
+	for _, tt := range tests {
+		if got, err := pki.DecodePFX(tt.data, "пароль"); err == nil {
+			t.Errorf("DecodePFX(%s) = %+v, want error", tt.name, got)
+		}
+	}
+}
+
+func TestEncodePFXErrors(t *testing.T) {
+	named := &pki.PFX{Keys: []*dstu4145.PrivateKey{newKey(t)}}
+	tests := []struct {
+		name       string
+		random     io.Reader
+		pfx        *pki.PFX
+		iterations int
+	}{
+		{"0 iterations", rand.Reader, named, 0},
+		{"no randomness for the key salt", io.LimitReader(rand.Reader, 10), named, 1},
+		{"no randomness for the key IV", io.LimitReader(rand.Reader, 32), named, 1},
+		{"no randomness for the MAC salt", io.LimitReader(rand.Reader, 10), &pki.PFX{}, 1},
+	}
+	for _, tt := range tests {
+		if _, err := pki.EncodePFX(tt.random, tt.pfx, "пароль", tt.iterations); err == nil {
+			t.Errorf("EncodePFX(%s) error = nil, want error", tt.name)
+		}
 	}
 }

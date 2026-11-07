@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"math/big"
 	"slices"
 	"strconv"
@@ -397,4 +398,42 @@ func TestNamedCurveConstants(t *testing.T) {
 			t.Errorf("NamedCurve(M%d = %d) = a curve over GF(2^%d), %v, want GF(2^%d)", tt.m, tt.id, c.f.m, err, tt.m)
 		}
 	}
+}
+
+func TestDestroy(t *testing.T) {
+	k, err := GenerateKey(mustCurve(t, M257), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer, err := GenerateKey(mustCurve(t, M257), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash := gost34311.Sum([]byte("destroy"))
+	r, s, err := Sign(rand.Reader, k, hash[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	k.Destroy()
+	k.Destroy() // idempotent
+
+	if !slices.Equal(k.d[:], make([]uint64, len(k.d))) {
+		t.Errorf("after Destroy d = %x, want all zero", k.d)
+	}
+	if _, _, err := Sign(rand.Reader, k, hash[:]); !errors.Is(err, ErrKeyDestroyed) {
+		t.Errorf("Sign with a destroyed key error = %v, want %v", err, ErrKeyDestroyed)
+	}
+	if _, err := k.ECDH(peer.Public()); !errors.Is(err, ErrKeyDestroyed) {
+		t.Errorf("ECDH with a destroyed key error = %v, want %v", err, ErrKeyDestroyed)
+	}
+	if !Verify(k.Public(), hash[:], r, s) {
+		t.Error("Verify with the public key of a destroyed key = false, want true")
+	}
+	defer func() {
+		if recover() == nil {
+			t.Error("Bytes of a destroyed key did not panic")
+		}
+	}()
+	k.Bytes()
 }

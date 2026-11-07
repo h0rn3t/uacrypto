@@ -396,15 +396,16 @@ type SignOptions struct {
 //
 // SignData fails if key does not belong to cert.
 func SignData(random io.Reader, content []byte, key *dstu4145.PrivateKey, cert *x509.Certificate, opts SignOptions) ([]byte, error) {
-	sd, err := signContent(random, oidData, content, key, cert, opts)
+	sd, err := signContent(random, oidData, content, key, cert, opts, true)
 	if err != nil {
 		return nil, err
 	}
 	return sd.marshal()
 }
 
-// signContent is SignData for any content type, before marshalling.
-func signContent(random io.Reader, contentType asn1.ObjectIdentifier, content []byte, key *dstu4145.PrivateKey, cert *x509.Certificate, opts SignOptions) (*signedData, error) {
+// signContent is SignData for any content type, before marshalling; without
+// signingTime the signed attributes leave it out, as PAdES requires.
+func signContent(random io.Reader, contentType asn1.ObjectIdentifier, content []byte, key *dstu4145.PrivateKey, cert *x509.Certificate, opts SignOptions, signingTime bool) (*signedData, error) {
 	pub, err := ParsePublicKey(cert.RawSubjectPublicKeyInfo)
 	if err != nil {
 		return nil, err
@@ -455,6 +456,9 @@ func signContent(random io.Reader, contentType asn1.ObjectIdentifier, content []
 		{oidMessageDigest, contentDigest},
 		{oidSigningCertV2, signingCert},
 	} {
+		if a.oid.Equal(oidSigningTime) && !signingTime {
+			continue
+		}
 		v, err := asn1.Marshal(a.value)
 		if err != nil {
 			return nil, fmt.Errorf("pki: signed attribute %v: %w", a.oid, err)

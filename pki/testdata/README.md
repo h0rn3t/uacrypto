@@ -54,9 +54,26 @@ EncapsulatedContentInfo і набір сертифікатів мають нев
 | `czo-test-asice-t-kupyna.asice` | ASiC-E, CAdES-T (`DSTU-7564/CAdES-T`, 2026-11-06) | Купина-256, ДСТУ 4145 |
 | `czo-test-asice-xlong-gost.asice` | ASiC-E, CAdES-X Long (`DSTU/CAdES-X_Long`, 2026-11-06) | ГОСТ 34.311, ДСТУ 4145 |
 | `czo-test-asics-xades-gost.asics` | ASiC-S, XAdES-B-B (`DSTU/XAdES-B-B`, 2026-11-06) | ГОСТ 34.311, ДСТУ 4145 |
+| `czo-test-asice-xades-bt-kupyna.asice` | ASiC-E, XAdES-B-T (`DSTU-7564/XAdES-B-T`, 2026-11-06) | Купина-256, ДСТУ 4145 |
+| `czo-test-xades-bb-gost.xml` | XAdES-B-B, вбудований підпис (`XAdES/DSTU/enveloped/XAdES-B-B/test.xml`, 2026-11-06) | ГОСТ 34.311, ДСТУ 4145 |
+| `czo-test-xades-bt-kupyna-detached.xml` | XAdES-B-T, відокремлений підпис файла `Test.xml` (`XAdES/DSTU-7564/detached/XAdES-B-T/sign.xml`, 2026-11-06) | Купина-256, ДСТУ 4145 |
+| `czo-test-xades-data.xml` | той файл `Test.xml` (`…/detached/XAdES-B-T/test.xml`) | — |
+| `czo-test-xades-blt-gost.xml` | XAdES-B-LT, вбудований підпис (`XAdES/DSTU/enveloped/XAdES-B-LT/test.xml`, 2026-11-06) | ГОСТ 34.311, ДСТУ 4145 |
+| `czo-test-xades-blta-kupyna.xml` | XAdES-B-LTA, вбудований підпис (`XAdES/DSTU-7564/enveloped/XAdES-B-LTA/test.xml`, 2026-11-06) | Купина-256, ДСТУ 4145 |
+| `czo-test-pades-bb-gost.pdf` | PAdES-B-B, файл `Test.pdf` (`PAdES/DSTU/PAdES-B-B/Test.pdf`, 2026-11-07) | ГОСТ 34.311, ДСТУ 4145 |
+| `czo-test-pades-bb-kupyna.pdf` | PAdES-B-B (`PAdES/DSTU-7564/PAdES-B-B/Test.pdf`, 2026-11-07) | Купина-256, ДСТУ 4145 |
+| `czo-test-pades-bt-gost.pdf` | PAdES-B-T (`PAdES/DSTU/PAdES-B-T/Test.pdf`, 2026-11-07) | ГОСТ 34.311, ДСТУ 4145 |
+| `czo-test-pades-bt-kupyna.pdf` | PAdES-B-T (`PAdES/DSTU-7564/PAdES-B-T/Test.pdf`, 2026-11-07) | Купина-256, ДСТУ 4145 |
+| `czo-test-pades-blt-gost.pdf` | PAdES-B-LT, з DSS (`PAdES/DSTU/PAdES-B-LT/Test.pdf`, 2026-11-07) | ГОСТ 34.311, ДСТУ 4145 |
+| `czo-test-pades-blta-kupyna.pdf` | PAdES-B-LTA, з DSS і позначкою часу документа (`PAdES/DSTU-7564/PAdES-B-LTA/Test.pdf`, 2026-11-07) | Купина-256, ДСТУ 4145 |
 | `czo-test-tsa.der` | сертифікат «TSP-сервер Адміністратора ІТС ЦЗО (CA TEST)» | — |
 | `czo-test-ocsp-ca.der` | сертифікат «OCSP-сервер Адміністратора ІТС ЦЗО (CA TEST)» | — |
 | `czo-test-ocsp-root.der` | сертифікат «OCSP-сервер Центрального засвідчувального органу (ROOT TEST)» | — |
+
+Зразки PAdES завантажено з `https://czo.gov.ua/download/test_sign/PAdES/<DSTU|DSTU-7564>/<категорія>/Test.pdf`.
+Перші 28879 байтів кожного — той самий непідписаний `Test.pdf` (Microsoft Word 2019, гібридна таблиця
+перехресних посилань); ІІТ дописує підпис, DSS і позначку часу документа інкрементними оновленнями
+з класичними таблицями. Тести беруть з них `Test.pdf` для `SignPAdES`.
 
 Відповіді OCSP, отримані 2026-11-04 на запити з CertID на Купині-256 і nonce `uacrypto-test-nonce`;
 у файлі — увесь OCSPResponse:
@@ -77,6 +94,10 @@ EncapsulatedContentInfo і набір сертифікатів мають нев
 | `jkurwa-self-signed-enc-40a0.cer` | сертифікат ключа `jkurwa-key40a0.der`; AKI, який `crypto/x509` відхиляє | jkurwa, `test/data/SELF_SIGNED_ENC_40A0.cer` |
 | `jkurwa-key6929.der` | ключ відправника конверта `jkurwa-enc-message.p7`: PKCS#8 у записі ІІТ (`d` little-endian) | jkurwa, `test/data/Key6929.cer` |
 | `jkurwa-self-signed-enc-6929.cer` | сертифікат ключа `jkurwa-key6929.der`; AKI, який `crypto/x509` відхиляє | jkurwa, `test/data/SELF_SIGNED_ENC_6929.cer` |
+| `jkurwa-key6-40a0.dat` | Key-6.dat у старому сховищі ІІТ (`1.3.6.1.4.1.19398.1.1.1.2`) з ключем `jkurwa-key40a0.der`, пароль `password`; контрольне значення — 4 нульові байти (jkurwa його не перевіряє) | 2026-11-07: ASN.1 `StoreIIT` з jkurwa 1.22.9 (`lib/spec/keystore.js`), ключ `dumb_kdf(пароль, 10000)` і ГОСТ 28147 ECB з gost89 0.1.12; jkurwa `Priv.from_protected` розшифровує його в той самий ключ |
+| `jkurwa-key6-iit-123456.dat` | те саме сховище з першим ключем `iit-123456.pfx` (крива m=257), пароль `123456`; відкритий ключ (big-endian) `01e0d6d2…c446cb` — той, що дає jkurwa | 2026-11-07: PKCS#8 розшифрував з PFX jkurwa (`pfx_parse` + `storeload`), сховище — як у рядку вище |
+| `jdk-bc-dstu4145.jks` | Sun JKS, пароль `пароль`: ключ ДСТУ 4145 (крива m=257, PKCS#8 Bouncy Castle, `d` = `50bf5cd5…69d1a523`) з самопідписаним сертифікатом і довірений сертифікат `czo-test-ocsp-root.der` | 2026-11-07: ключ і сертифікат — Bouncy Castle 1.86, сховище — `KeyStore.getInstance("JKS")` OpenJDK 27.0.1 |
+| `rust-dstu4145.jks` | Sun JKS, пароль `пароль`: той самий ключ у записі ІІТ (`d` little-endian), той самий сертифікат; алгоритм захисту ключа з параметром NULL, як у ПриватБанку | 2026-11-07: `JksKeyStore` з ua-cryptography-pki 0.1.6 (Rust) |
 
 Конверт (CMS EnvelopedData) `jkurwa-enc-message.p7` — `enc_message.p7` з jkurwa 1.22.9: «123» від ключа
 `jkurwa-key6929.der` сертифікату `jkurwa-self-signed-enc-40a0.cer`, зроблений із підміненим генератором,
@@ -92,3 +113,9 @@ EncapsulatedContentInfo і набір сертифікатів мають нев
 | `czo-2020-delta.crl` | http://czo.gov.ua/download/crls/CZO-2020-Delta.crl | `czo-2020.der` | 343357 | 0 |
 | `czo-2026-full.crl` | http://czo.gov.ua/download/crls/CZO-2026-Full.crl | `czo-2601.der` | 342847 | 0 |
 | `czo-2026-delta.crl` | http://czo.gov.ua/download/crls/CZO-2026-Delta.crl | `czo-2601.der` | 343350 | 0 |
+
+Генератор ДСТУ 4145 cryptonite (`PRNG_MODE_DSTU`) — `dstu4145/testdata/cryptonite_prng.txt`, 2026-11-07: вісім
+випадків (сід, час засівання, 48 байтів виходу, дані для `prng_seed`, час повторного засівання, 32 байти виходу),
+які друкує [`parity/cryptonite/prng.c`](../../parity/cryptonite/prng.c) — cryptonite з коміту `3618d340`
+(архів GitHub, SHA-256 `7da75f28…f27d8b`) із годинником, підставленим замість `time(NULL)`. Сіди й дані — з
+лінійного конгруентного генератора в `prng.c`; `make -C parity cryptonite` відтворює файл і порівнює байт у байт.

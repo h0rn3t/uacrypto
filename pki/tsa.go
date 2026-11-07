@@ -116,7 +116,7 @@ func CreateTimeStampResponse(random io.Reader, req *TimeStampRequest, ts *TimeSt
 	if err != nil {
 		return nil, fmt.Errorf("pki: TSTInfo: %w", err)
 	}
-	sd, err := signContent(random, oidTSTInfo, content, key, ts.Certificate, SignOptions{GOST34311: true})
+	sd, err := signContent(random, oidTSTInfo, content, key, ts.Certificate, SignOptions{GOST34311: true}, true)
 	if err != nil {
 		return nil, err
 	}

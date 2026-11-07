@@ -3,6 +3,7 @@
 #   make tsa      — CAdES-T з позначками часу справжнього TSA (мережа; TSA_URL змінює сервер)
 #   make czo      — перевірити підписи всіх ДСТУ-сертифікатів пакета ЦЗО (окремо: пакет оновлюється)
 #   make iit IIT_LIB=…/euscp.dylib — звірка з бібліотекою ІІТ «Користувач ЦСК» (окремо: вона не постачається з репозиторієм)
+#   make cryptonite — генератор ДСТУ 4145 cryptonite (C-компілятор; вихідний код завантажується за фіксованим комітом)
 #   make clean    — прибрати згенероване
 
 BC_VERSION := 1.86
@@ -13,11 +14,16 @@ TSA_URL    ?= http://ca.diia.gov.ua/services/tsp/
 CZO_URL    := https://czo.gov.ua/download/certificates/CACertificates.p7b
 CZO_SHA256 := efc6a4ecf5ca10dd099335fbf2c1173d597110b4eb431cb89652e7b7369029c4
 OUT        := out
+CRYPTONITE_REV    := 3618d340d22e27a6becf97d89c453f8e64068a39
+CRYPTONITE_SHA256 := 7da75f28041682c38a7d274dbde64f4d68a1d21f5eb8617e8330ab93c5f27d8b
+CRYPTONITE_URL    := https://github.com/privat-it/cryptonite/archive/$(CRYPTONITE_REV).tar.gz
+CRYPTONITE_SRC    := $(OUT)/cryptonite-$(CRYPTONITE_REV)/src/cryptonite/c
+CC         ?= cc
 JAVA       ?= java
 JAVAC      ?= javac
 BUN        ?= bun
 
-.PHONY: all cms envelope tsa czo iit clean
+.PHONY: all cms envelope tsa czo iit cryptonite clean
 all: $(OUT)/cases.txt $(OUT)/bc_sigs.txt $(OUT)/rust_sigs.txt $(OUT)/jkurwa_sigs.txt cms envelope
 	cat $(OUT)/bc_sigs.txt $(OUT)/rust_sigs.txt $(OUT)/jkurwa_sigs.txt > $(OUT)/foreign_sigs.txt
 	go run . verify $(OUT)/foreign_sigs.txt
@@ -82,6 +88,27 @@ iit:
 	mkdir -p $(OUT)
 	cd iit && go build -o ../$(OUT)/iit .
 	$(OUT)/iit $(IIT_LIB)
+
+$(CRYPTONITE_SRC):
+	mkdir -p $(OUT)
+	curl -fsSL -o $(OUT)/cryptonite.tar.gz.tmp $(CRYPTONITE_URL)
+	echo "$(CRYPTONITE_SHA256)  $(OUT)/cryptonite.tar.gz.tmp" | shasum -a 256 -c -
+	tar -xzf $(OUT)/cryptonite.tar.gz.tmp -C $(OUT)
+	rm $(OUT)/cryptonite.tar.gz.tmp
+
+# Генератор ДСТУ 4145 (PRNG_MODE_DSTU): cryptonite з годинником, підставленим замість time(NULL), друкує
+# таблицю випадків; вона має збігтися з ../dstu4145/testdata/cryptonite_prng.txt, на якій uacrypto перевіряє NewPRNG
+cryptonite: $(CRYPTONITE_SRC) cryptonite/prng.c
+	sed 's/return (uint64_t)time(NULL);/{ extern uint64_t fake_time; return fake_time; }/' \
+		$(CRYPTONITE_SRC)/dstu4145_prng_internal.c > $(OUT)/cryptonite_prng_internal.c
+	grep -q fake_time $(OUT)/cryptonite_prng_internal.c
+	$(CC) -w -DCRYPTONITE_EXPORT= -I$(CRYPTONITE_SRC) -I$(CRYPTONITE_SRC)/../../pthread/c -o $(OUT)/cryptonite_prng cryptonite/prng.c \
+		$(OUT)/cryptonite_prng_internal.c $(addprefix $(CRYPTONITE_SRC)/,prng.c gost28147.c gost34_311.c \
+		byte_array.c byte_array_internal.c byte_utils_internal.c stacktrace.c word_internal.c math_int_internal.c math_gfp_internal.c rs.c) \
+		$(CRYPTONITE_SRC)/../../pthread/c/pthread_impl.c
+	$(OUT)/cryptonite_prng > $(OUT)/cryptonite_prng.txt
+	cmp $(OUT)/cryptonite_prng.txt ../dstu4145/testdata/cryptonite_prng.txt
+	go test -count=1 -run TestPRNGCryptonite ../dstu4145
 
 clean:
 	rm -rf $(OUT) rust/target jkurwa/node_modules $(BC_JAR)

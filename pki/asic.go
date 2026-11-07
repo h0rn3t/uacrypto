@@ -12,20 +12,24 @@ import (
 	"io"
 	"io/fs"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/h0rn3t/uacrypto/gost34311"
 	"github.com/h0rn3t/uacrypto/kupyna"
 )
 
-// Associated Signature Containers (ETSI EN 319 162-1) with CAdES signatures,
-// as IIT writes them.
+// Associated Signature Containers (ETSI EN 319 162-1) with CAdES or XAdES
+// signatures, as IIT writes them.
 const (
 	asicSType       = "application/vnd.etsi.asic-s+zip"
 	asicEType       = "application/vnd.etsi.asic-e+zip"
 	asicSSignature  = "META-INF/signature.p7s"
 	asicESignature  = "META-INF/signature001.p7s"
 	asicEManifest   = "META-INF/ASiCManifest001.xml"
+	asicSXAdES      = "META-INF/signatures.xml"
+	asicEXAdES      = "META-INF/signatures001.xml"
+	asicEODF        = "META-INF/manifest.xml"
 	asicNamespace   = "http://uri.etsi.org/02918/v1.2.1#"
 	xmldsNamespace  = "http://www.w3.org/2000/09/xmldsig#"
 	digestGOST34311 = "http://www.w3.org/2001/04/xmlenc#gost34311"
@@ -65,18 +69,8 @@ func CreateASiCS(file ASiCFile, sign func(data []byte) ([]byte, error)) ([]byte,
 // META-INF/signature001.p7s, the detached CAdES signature that sign returns
 // for the manifest. The manifest is written as IIT writes it.
 func CreateASiCE(files []ASiCFile, gost34311Digest bool, sign func(manifest []byte) ([]byte, error)) ([]byte, error) {
-	if len(files) == 0 {
-		return nil, errors.New("pki: ASiC-E needs at least one file")
-	}
-	seen := make(map[string]bool, len(files))
-	for _, f := range files {
-		if err := checkASiCName(f.Name); err != nil {
-			return nil, err
-		}
-		if seen[f.Name] {
-			return nil, fmt.Errorf("pki: ASiC file %q appears twice", f.Name)
-		}
-		seen[f.Name] = true
+	if err := checkASiCFiles(files); err != nil {
+		return nil, err
 	}
 
 	algorithm := digestKupyna256
@@ -106,6 +100,128 @@ func CreateASiCE(files []ASiCFile, gost34311Digest bool, sign func(manifest []by
 	entries := append(append([]ASiCFile(nil), files...),
 		ASiCFile{Name: asicEManifest, Data: manifest}, ASiCFile{Name: asicESignature, Data: signature})
 	return writeASiC(asicEType, entries)
+}
+
+// CreateASiCSXAdES returns an ASiC-S container holding file and
+// META-INF/signatures.xml, the detached XAdES signature that sign returns
+// for the file: for example SignXAdESDetached, extended by
+// AddXAdESSignatureTimeStamp and AddXAdESValidationData. The signature goes
+// into an asic:XAdESSignatures element as IIT writes it.
+func CreateASiCSXAdES(file ASiCFile, sign func(files []ASiCFile) ([]byte, error)) ([]byte, error) {
+	if err := checkASiCName(file.Name); err != nil {
+		return nil, err
+	}
+	signatures, err := asicXAdES([]ASiCFile{file}, sign)
+	if err != nil {
+		return nil, err
+	}
+	return writeASiC(asicSType, []ASiCFile{file, {Name: asicSXAdES, Data: signatures}})
+}
+
+// CreateASiCEXAdES returns an ASiC-E container holding files, the
+// OpenDocument manifest META-INF/manifest.xml that lists them and
+// META-INF/signatures001.xml, the detached XAdES signature that sign returns
+// for files, written as CreateASiCSXAdES writes it. The manifest is written
+// as IIT writes it, with the MIME types SignXAdESDetached gives the files.
+func CreateASiCEXAdES(files []ASiCFile, sign func(files []ASiCFile) ([]byte, error)) ([]byte, error) {
+	if err := checkASiCFiles(files); err != nil {
+		return nil, err
+	}
+	var m strings.Builder
+	m.WriteString(`<?xml version="1.0" encoding="utf-8" standalone="no" ?>`)
+	m.WriteString(`<manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0">`)
+	m.WriteString(`<manifest:file-entry manifest:full-path="/" manifest:media-type="` + asicEType + `"/>`)
+	for _, f := range files {
+		m.WriteString(`<manifest:file-entry manifest:full-path="`)
+		_ = xml.EscapeText(&m, []byte(f.Name)) // never fails: strings.Builder does not
+		m.WriteString(`" manifest:media-type="` + xadesMimeType(f.Name) + `"/>`)
+	}
+	m.WriteString(`</manifest:manifest>`)
+
+	signatures, err := asicXAdES(files, sign)
+	if err != nil {
+		return nil, err
+	}
+	entries := append(slices.Clone(files), ASiCFile{Name: asicEODF, Data: []byte(m.String())}, ASiCFile{Name: asicEXAdES, Data: signatures})
+	return writeASiC(asicEType, entries)
+}
+
+// asicXAdES returns the asic:XAdESSignatures document of the detached
+// signature that sign returns for files. As IIT does, it writes the
+// namespace declarations of ds:Signature and xades:QualifyingProperties
+// after their other attributes; the order of attributes is not signed.
+func asicXAdES(files []ASiCFile, sign func(files []ASiCFile) ([]byte, error)) ([]byte, error) {
+	sig, err := sign(files)
+	if err != nil {
+		return nil, fmt.Errorf("pki: sign the ASiC files: %w", err)
+	}
+	root, _, err := parseXML(sig)
+	if err != nil {
+		return nil, err
+	}
+	if !root.is(xmldsNamespace, "Signature") || !bytes.HasPrefix(sig[root.end:], []byte("</")) {
+		return nil, errors.New("pki: the XAdES signature for ASiC is not a ds:Signature document")
+	}
+	var b bytes.Buffer
+	b.WriteString(`<?xml version="1.0" encoding="utf-8" standalone="no" ?>`)
+	b.WriteString(`<asic:XAdESSignatures xmlns:asic="` + asicNamespace + `" xmlns:ds="` + xmldsNamespace + `" xmlns:xades="` + nsXAdES +
+		`" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">`)
+	pos := root.start
+	for _, e := range []*xmlElement{root, root.child(xmldsNamespace, "Object").child(nsXAdES, "QualifyingProperties")} {
+		if e == nil {
+			continue
+		}
+		b.Write(sig[pos:e.start])
+		writeDeclarationsLast(&b, e, sig[e.start:e.inner])
+		pos = e.inner
+	}
+	end := root.end + bytes.IndexByte(sig[root.end:], '>') + 1 // past </ds:Signature>
+	b.Write(sig[pos:end])
+	b.WriteString(`</asic:XAdESSignatures>`)
+	return b.Bytes(), nil
+}
+
+// writeDeclarationsLast writes the start tag of e, which is tag, with the
+// namespace declarations after the other attributes.
+func writeDeclarationsLast(b *bytes.Buffer, e *xmlElement, tag []byte) {
+	isDecl := func(a xml.Attr) bool { return a.Name.Space == "xmlns" || a.Name.Space == "" && a.Name.Local == "xmlns" }
+	b.WriteByte('<')
+	writeQName(b, e.prefix, e.local)
+	for _, decls := range []bool{false, true} {
+		for _, a := range e.attrs {
+			if isDecl(a) != decls {
+				continue
+			}
+			b.WriteByte(' ')
+			writeQName(b, a.Name.Space, a.Name.Local)
+			b.WriteString(`="`)
+			escapeCanonical(b, a.Value, true)
+			b.WriteByte('"')
+		}
+	}
+	if bytes.HasSuffix(tag, []byte("/>")) {
+		b.WriteByte('/')
+	}
+	b.WriteByte('>')
+}
+
+// checkASiCFiles checks the files of an ASiC-E container: at least one, each
+// with a valid name, no name twice.
+func checkASiCFiles(files []ASiCFile) error {
+	if len(files) == 0 {
+		return errors.New("pki: ASiC-E needs at least one file")
+	}
+	seen := make(map[string]bool, len(files))
+	for _, f := range files {
+		if err := checkASiCName(f.Name); err != nil {
+			return err
+		}
+		if seen[f.Name] {
+			return fmt.Errorf("pki: ASiC file %q appears twice", f.Name)
+		}
+		seen[f.Name] = true
+	}
+	return nil
 }
 
 // checkASiCName rejects names that are not a relative path to a file, and
@@ -150,13 +266,15 @@ func writeASiC(mediaType string, entries []ASiCFile) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// VerifyASiC verifies the CAdES signatures of an ASiC-S or ASiC-E container
-// as VerifySignedData does, with certs for the certificates the signatures
-// leave out, and returns the signed files in container order and the
-// signers. In ASiC-E every signature signs a manifest, and the files are
-// those the manifests list with matching digests; a file no manifest lists
-// is not returned. A changed file is ErrInvalidSignature. XAdES signatures
-// are errors.ErrUnsupported.
+// VerifyASiC verifies the signatures of an ASiC-S or ASiC-E container, with
+// certs for the certificates the signatures leave out, and returns the signed
+// files in container order and the signers. CAdES signatures are verified as
+// VerifySignedData does: in ASiC-E every one signs a manifest, and the files
+// are those the manifests list with matching digests. XAdES signatures
+// (META-INF/signatures*.xml) are verified as VerifyXAdES does and sign the
+// files themselves. A file no signature covers is not returned; a changed
+// file is ErrInvalidSignature. A container with both kinds of signatures is
+// errors.ErrUnsupported.
 func VerifyASiC(container []byte, certs []*x509.Certificate) ([]ASiCFile, []Signer, error) {
 	zr, err := zip.NewReader(bytes.NewReader(container), int64(len(container)))
 	if err != nil {
@@ -188,20 +306,71 @@ func VerifyASiC(container []byte, certs []*x509.Certificate) ([]ASiCFile, []Sign
 			data = append(data, ASiCFile{Name: f.Name, Data: b})
 		}
 	}
-	for name := range entries {
-		if strings.HasPrefix(name, "META-INF/") && strings.Contains(name, "signatures") && strings.HasSuffix(name, ".xml") {
-			return nil, nil, fmt.Errorf("pki: ASiC with XAdES signatures (%s): %w", name, errors.ErrUnsupported)
+	var xades []string // the XAdES signatures, in container order
+	for _, f := range zr.File {
+		if strings.HasPrefix(f.Name, "META-INF/") && strings.Contains(f.Name, "signatures") && strings.HasSuffix(f.Name, ".xml") {
+			xades = append(xades, f.Name)
 		}
 	}
 
-	switch mediaType := string(entries["mimetype"]); mediaType {
-	case asicSType:
-		return verifyASiCS(entries, data, certs)
-	case asicEType:
-		return verifyASiCE(entries, data, certs)
-	default:
+	switch mediaType := string(entries["mimetype"]); {
+	case mediaType != asicSType && mediaType != asicEType:
 		return nil, nil, fmt.Errorf("pki: ASiC media type %q, want %s or %s", mediaType, asicSType, asicEType)
+	case len(xades) > 0:
+		return verifyASiCXAdES(mediaType, entries, data, xades, certs)
+	case mediaType == asicSType:
+		return verifyASiCS(entries, data, certs)
+	default:
+		return verifyASiCE(entries, data, certs)
 	}
+}
+
+// verifyASiCXAdES verifies the XAdES signatures xades of a container, which
+// sign its files directly: META-INF/signatures.xml the one file of ASiC-S,
+// META-INF/signatures*.xml any files of ASiC-E.
+func verifyASiCXAdES(mediaType string, entries map[string][]byte, data []ASiCFile, xades []string, certs []*x509.Certificate) ([]ASiCFile, []Signer, error) {
+	for name := range entries {
+		if strings.HasPrefix(name, "META-INF/") && strings.HasSuffix(name, ".p7s") {
+			return nil, nil, fmt.Errorf("pki: ASiC with both XAdES and CAdES signatures: %w", errors.ErrUnsupported)
+		}
+	}
+	if mediaType == asicSType && (len(data) != 1 || len(xades) != 1 || xades[0] != asicSXAdES) {
+		return nil, nil, fmt.Errorf("pki: ASiC-S holds %d files and XAdES signatures %q, want 1 file and %s", len(data), xades, asicSXAdES)
+	}
+	files := make(map[string][]byte, len(data))
+	for _, f := range data {
+		files[f.Name] = f.Data
+	}
+	signed := make(map[string]bool)
+	var signers []Signer
+	for _, name := range xades {
+		uris, s, err := VerifyXAdES(entries[name], files, certs)
+		if err != nil {
+			return nil, nil, fmt.Errorf("pki: ASiC %s: %w", name, err)
+		}
+		for _, uri := range uris {
+			file := uri
+			if _, ok := files[file]; !ok {
+				file, _ = url.PathUnescape(uri) // the other name VerifyXAdES looks up
+			}
+			if _, ok := files[file]; !ok {
+				return nil, nil, fmt.Errorf("pki: ASiC %s signs %q, which is not a file of the container", name, uri)
+			}
+			signed[file] = true
+		}
+		signers = append(signers, s...)
+	}
+
+	var out []ASiCFile
+	for _, f := range data {
+		if signed[f.Name] {
+			out = append(out, f)
+		}
+	}
+	if mediaType == asicSType && len(out) != 1 {
+		return nil, nil, fmt.Errorf("pki: ASiC-S %s does not sign %s", asicSXAdES, data[0].Name)
+	}
+	return out, signers, nil
 }
 
 func readZipEntry(f *zip.File) ([]byte, error) {

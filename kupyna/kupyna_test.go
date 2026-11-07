@@ -80,6 +80,9 @@ func TestMAC(t *testing.T) {
 	if got := hex.EncodeToString(m.Sum(nil)); got != want {
 		t.Errorf("second Sum = %s, want %s: Sum must not change the state", got, want)
 	}
+	if m.Size() != Size256 || m.BlockSize() != 64 {
+		t.Errorf("Size(), BlockSize() = %d, %d, want %d, 64", m.Size(), m.BlockSize(), Size256)
+	}
 	m.Reset()
 	_, _ = m.Write([]byte("Hello World"))
 	if got := hex.EncodeToString(m.Sum(nil)); got != want {

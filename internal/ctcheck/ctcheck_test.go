@@ -192,3 +192,99 @@ func TestStrumok256(t *testing.T) {
 			s.XORKeyStream(buf, buf)
 		}))
 }
+
+// kalynaMode is a keyed Kalyna-128 with a secret message for the mode tests.
+type kalynaMode struct {
+	b    cipher.Block
+	data []byte
+}
+
+func kalyna128Mode(class int) kalynaMode {
+	return kalynaMode{b: kalyna128(class).b, data: secret(class, 64)}
+}
+
+// TestKalyna128GMAC times the multiplications in GF(2^128) by the secret H.
+func TestKalyna128GMAC(t *testing.T) {
+	check(t, Run(samples, kalyna128Mode, func(in kalynaMode) {
+		if _, err := kalyna.GMAC(in.b, in.data, 16); err != nil {
+			panic(err)
+		}
+	}))
+}
+
+func TestKalyna128CMAC(t *testing.T) {
+	check(t, Run(samples, kalyna128Mode, func(in kalynaMode) {
+		if _, err := kalyna.CMAC(in.b, in.data, 16); err != nil {
+			panic(err)
+		}
+	}))
+}
+
+// TestKalyna128XTS times the tweak doubling under a secret key and tweak.
+func TestKalyna128XTS(t *testing.T) {
+	check(t, Run(samples, kalyna128Mode, func(in kalynaMode) {
+		x, err := kalyna.NewXTS(in.b)
+		if err != nil {
+			panic(err)
+		}
+		if _, err := x.Encrypt(in.data[:16], in.data); err != nil {
+			panic(err)
+		}
+	}))
+}
+
+// TestKalyna128GCMOpenForgery times rejecting a tag wrong in its first byte
+// against one wrong in its last byte.
+func TestKalyna128GCMOpenForgery(t *testing.T) {
+	g, err := kalyna.NewGCM(kalyna128(1).b, 16)
+	if err != nil {
+		panic(err)
+	}
+	nonce := make([]byte, 16)
+	sealed, err := g.Seal(nonce, make([]byte, 64), nil)
+	if err != nil {
+		panic(err)
+	}
+	check(t, Run(samples,
+		func(class int) []byte {
+			forged := append([]byte(nil), sealed...)
+			forged[len(forged)-16+class*15] ^= 1
+			return forged
+		},
+		func(forged []byte) {
+			if _, err := g.Open(nonce, forged, nil); err == nil {
+				panic("forged tag accepted")
+			}
+		}))
+}
+
+// TestKalyna128Unwrap times unwrapping a secret 32-byte key, whose last
+// bytes Unwrap compares against every padding.
+func TestKalyna128Unwrap(t *testing.T) {
+	b := kalyna128(1).b
+	check(t, Run(samples,
+		func(class int) []byte {
+			wrapped, err := kalyna.Wrap(b, secret(class, 32))
+			if err != nil {
+				panic(err)
+			}
+			return wrapped
+		},
+		func(wrapped []byte) {
+			if _, err := kalyna.Unwrap(b, wrapped); err != nil {
+				panic(err)
+			}
+		}))
+}
+
+func TestKalyna128CCM(t *testing.T) {
+	check(t, Run(samples, kalyna128Mode, func(in kalynaMode) {
+		c, err := kalyna.NewCCM(in.b, 8, 16)
+		if err != nil {
+			panic(err)
+		}
+		if _, err := c.Seal(in.data[:16], in.data, in.data[16:32]); err != nil {
+			panic(err)
+		}
+	}))
+}

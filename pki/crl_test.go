@@ -63,6 +63,9 @@ func TestParseRevocationListRejects(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateRevocationList() error = %v", err)
 	}
+	otherKeyID := new(x509.Certificate)
+	*otherKeyID = *ca
+	otherKeyID.SubjectKeyId = []byte{1, 2, 3}
 
 	tests := []struct {
 		name    string
@@ -74,6 +77,7 @@ func TestParseRevocationListRejects(t *testing.T) {
 		{"signature over changed content", tampered, readCert(t, "czo-2020.der"), pki.ErrInvalidSignature},
 		{"issuer without cRLSign", own, noCRLSign, nil},
 		{"not a CRL", readCert(t, "czo-2020.der").Raw, readCert(t, "czo-2020.der"), nil},
+		{"another key of the CA", own, otherKeyID, nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -183,6 +187,8 @@ func TestRevocationStatus(t *testing.T) {
 		{"full CRL as the delta", full, full},
 		{"delta on a newer base", full, create(t, 12, 11)},
 		{"delta of another CA", full, foreign},
+		{"malformed delta CRL indicator", full, &x509.RevocationList{Number: big.NewInt(11),
+			Extensions: []pkix.Extension{{Id: oidDeltaCRLIndicator, Critical: true, Value: []byte{0x02}}}}},
 	}
 	for _, tt := range invalid {
 		t.Run(tt.name, func(t *testing.T) {
@@ -235,5 +241,8 @@ func TestCreateRevocationList(t *testing.T) {
 
 	if _, err := pki.CreateRevocationList(rand.Reader, tmpl, ca, newKey(t)); err == nil {
 		t.Error("CreateRevocationList(a key not of the issuer) error = nil, want error")
+	}
+	if _, err := pki.CreateRevocationList(rand.Reader, tmpl, newECDSACert(t), key); err == nil {
+		t.Error("CreateRevocationList(an ECDSA issuer) error = nil, want error")
 	}
 }

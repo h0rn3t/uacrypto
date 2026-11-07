@@ -48,6 +48,7 @@ var (
 	oidShroudedKeyBag     = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 12, 10, 1, 2}
 	oidCertBag            = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 12, 10, 1, 3}
 	oidX509CertificateBag = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 9, 22, 1}
+	oidLocalKeyID         = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 9, 21}
 )
 
 type pbes2Params struct {
@@ -265,7 +266,8 @@ func ParsePKCS8KeyAgreementKey(der []byte) (*dstu4145.PrivateKey, error) {
 }
 
 // A PFX is what a PKCS#12 file (.pfx, .p12) holds: the private keys and
-// certificates of its owner.
+// certificates of its owner. DecodeIITKey6 and DecodeJKS return what the key
+// files of IIT and of Java hold in a PFX too.
 type PFX struct {
 	Keys         []*dstu4145.PrivateKey
 	Certificates []*x509.Certificate
@@ -377,15 +379,7 @@ func (p *PFX) addBags(der []byte, password string) error {
 			if err != nil {
 				return err
 			}
-			key, err := ParsePKCS8PrivateKey(pkcs8)
-			if err != nil {
-				return err
-			}
-			p.Keys = append(p.Keys, key)
-			switch agreement, err := ParsePKCS8KeyAgreementKey(pkcs8); {
-			case err == nil:
-				p.Keys = append(p.Keys, agreement)
-			case !errors.Is(err, ErrNoKeyAgreementKey):
+			if p.Keys, err = appendPKCS8Keys(p.Keys, pkcs8); err != nil {
 				return err
 			}
 		case bag.ID.Equal(oidCertBag):
@@ -445,19 +439,38 @@ func pfxMACKey(password string, salt []byte, iterations int) []byte {
 // each key in PKCS#8 as IIT writes it (dstu4145le with the OID of the curve
 // and ДКЕ №1, d little-endian), encrypted by EncryptPKCS8PrivateKey, the
 // certificates in the clear, and a MAC on HMAC GOST 34.311 over a 32-byte
-// salt. Key derivation and the MAC take iterations rounds; IIT uses 10000.
+// salt. Like IIT, it marks each key and the certificate of a key with
+// localKeyID, the SKI of the key; friendlyName is not written. Key derivation and the MAC take iterations rounds; IIT uses 10000.
 // Keys must lie on named curves. To change the password of a PFX, decode it
 // with the old password and encode it with the new one.
 func EncodePFX(random io.Reader, p *PFX, password string, iterations int) ([]byte, error) {
 	if iterations < 1 || iterations > maxIterations {
 		return nil, fmt.Errorf("pki: PFX with %d iterations", iterations)
 	}
+	type attribute struct {
+		ID     asn1.ObjectIdentifier
+		Values []asn1.RawValue `asn1:"set"`
+	}
 	type safeBag struct {
-		ID    asn1.ObjectIdentifier
-		Value asn1.RawValue
+		ID         asn1.ObjectIdentifier
+		Value      asn1.RawValue
+		Attributes []attribute `asn1:"optional,set"`
 	}
 	explicit0 := func(der []byte) asn1.RawValue {
 		return asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: 0, IsCompound: true, Bytes: der}
+	}
+	// IIT marks each key with localKeyID, the GOST 34.311 hash of the key's
+	// BIT STRING, which is also the SKI of its certificate.
+	localKeyID := func(pub *dstu4145.PublicKey) ([]attribute, error) {
+		le := pub.Bytes()
+		slices.Reverse(le)
+		point, err := asn1.Marshal(le)
+		if err != nil {
+			return nil, fmt.Errorf("pki: public key: %w", err)
+		}
+		sum := gost34311.Sum(point)
+		id := asn1.RawValue{Tag: asn1.TagOctetString, Bytes: sum[:]}
+		return []attribute{{oidLocalKeyID, []asn1.RawValue{id}}}, nil
 	}
 	var bags []safeBag
 	for _, key := range p.Keys {
@@ -469,7 +482,11 @@ func EncodePFX(random io.Reader, p *PFX, password string, iterations int) ([]byt
 		if err != nil {
 			return nil, err
 		}
-		bags = append(bags, safeBag{oidShroudedKeyBag, explicit0(encrypted)})
+		attrs, err := localKeyID(key.Public())
+		if err != nil {
+			return nil, err
+		}
+		bags = append(bags, safeBag{oidShroudedKeyBag, explicit0(encrypted), attrs})
 	}
 	for _, cert := range p.Certificates {
 		cb, err := asn1.Marshal(struct {
@@ -479,7 +496,13 @@ func EncodePFX(random io.Reader, p *PFX, password string, iterations int) ([]byt
 		if err != nil {
 			return nil, fmt.Errorf("pki: CertBag: %w", err)
 		}
-		bags = append(bags, safeBag{oidCertBag, explicit0(cb)})
+		var attrs []attribute
+		if key, err := p.KeyFor(cert); err == nil {
+			if attrs, err = localKeyID(key.Public()); err != nil {
+				return nil, err
+			}
+		}
+		bags = append(bags, safeBag{oidCertBag, explicit0(cb), attrs})
 	}
 	safeContents, err := asn1.Marshal(bags)
 	if err != nil {

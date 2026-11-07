@@ -528,6 +528,7 @@ func TestNewModeParameters(t *testing.T) {
 		name string
 		fn   func() error
 	}{
+		{"CFB nil block", func() error { _, err := kalyna.NewCFB(nil, 16); return err }},
 		{"CFB segment 0", func() error { _, err := kalyna.NewCFB(b, 0); return err }},
 		{"CFB segment past block", func() error { _, err := kalyna.NewCFB(b, 33); return err }},
 		{"CFB IV", func() error {
@@ -549,4 +550,17 @@ func TestNewModeParameters(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCTRShortDst(t *testing.T) {
+	s, err := kalyna.NewCTR(mustCipher(t, 16, 16), sequence(0, 16))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if recover() == nil {
+			t.Error("XORKeyStream(3-byte dst, 4-byte src) did not panic, want a panic")
+		}
+	}()
+	s.XORKeyStream(make([]byte, 3), make([]byte, 4))
 }

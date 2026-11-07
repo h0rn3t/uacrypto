@@ -22,6 +22,7 @@ make
 | [`jkurwa/check.mjs`](jkurwa/check.mjs) | [`jkurwa`](https://github.com/dstucrypt/jkurwa) 1.22.9 (ДСТУ 4145) і [`gost89`](https://github.com/dstucrypt/gost89) 0.1.12 (ГОСТ 34.311, ГОСТ 28147: блок, CFB, імітовставка 32 і 64 біти) |
 | [`rust/src/main.rs`](rust/src/main.rs) | `ua-cryptography-*` (зокрема `dstu7624` для Калини і `pki` для CMS), RustCrypto `kupyna`, `structured-dstu4145` |
 | [`iit/`](iit) | бібліотека ІІТ «Користувач ЦСК» (EU Sign) через `dlopen`, окремий модуль із cgo |
+| [`cryptonite/prng.c`](cryptonite/prng.c) | генератор ДСТУ 4145 сертифікованої [cryptonite](https://github.com/privat-it/cryptonite) (`make cryptonite`) |
 
 ## Бібліотека ІІТ
 
@@ -45,6 +46,15 @@ MAC Калини-256 (`kalyna.CMAC`, 64, 128 і 256 біт) на всіх дов
   шифрується *останніми* байтами блока гами, а неповний останній блок MAC доповнюється `80 00…` і
   маскується E(`01 00…`) замість E(0). Bouncy Castle і `ua-cryptography-dstu7624`, перекладений з нього,
   беруть перші байти гами CFB і такі MAC відхиляють.
+
+## cryptonite
+
+Генератор псевдовипадкових чисел, з яким cryptonite генерує ключі й підписує ДСТУ 4145 (`PRNG_MODE_DSTU`),
+домішує поточний час, тож тестових векторів у cryptonite немає. `make cryptonite` завантажує вихідний код
+cryptonite з фіксованого коміту (перевірка SHA-256), збирає генератор C-компілятором із годинником,
+підставленим замість `time(NULL)`, друкує таблицю з восьми випадків, порівнює її байт у байт із
+`dstu4145/testdata/cryptonite_prng.txt` і запускає `TestPRNGCryptonite`, який перевіряє на тій самій
+таблиці `dstu4145.NewPRNG`, `Read` і `Seed`. Потрібні `curl` і `cc`; мережа — лише для першого завантаження.
 
 ## Формати, які треба узгоджувати
 

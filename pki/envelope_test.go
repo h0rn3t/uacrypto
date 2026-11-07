@@ -9,7 +9,9 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
+	"io"
 	"math/big"
+	"slices"
 	"testing"
 	"time"
 
@@ -195,22 +197,31 @@ func TestEnvelopedData(t *testing.T) {
 	}
 }
 
-func TestEncryptEnvelopedDataErrors(t *testing.T) {
-	sender := newEnvelopeParty(t, 6, "відправник")
-	recipient := newEnvelopeParty(t, 6, "одержувач")
+// newECDSACert returns a self-signed CA certificate of a P-256 key, a key the
+// package does not take.
+func newECDSACert(t *testing.T) *x509.Certificate {
+	t.Helper()
 	ecKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	tmpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "ECDSA"}}
-	ecDER, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &ecKey.PublicKey, ecKey)
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "ECDSA"},
+		KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign, BasicConstraintsValid: true, IsCA: true}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &ecKey.PublicKey, ecKey)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ecCert, err := x509.ParseCertificate(ecDER)
+	cert, err := x509.ParseCertificate(der)
 	if err != nil {
 		t.Fatal(err)
 	}
+	return cert
+}
+
+func TestEncryptEnvelopedDataErrors(t *testing.T) {
+	sender := newEnvelopeParty(t, 6, "відправник")
+	recipient := newEnvelopeParty(t, 6, "одержувач")
+	ecCert := newECDSACert(t)
 
 	tests := []struct {
 		name       string
@@ -225,6 +236,309 @@ func TestEncryptEnvelopedDataErrors(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if _, err := pki.EncryptEnvelopedData(rand.Reader, []byte("x"), tt.key, sender.cert, tt.recipients); err == nil {
 				t.Errorf("EncryptEnvelopedData(%s) error = nil, want error", tt.name)
+			}
+		})
+	}
+	if _, err := pki.EncryptEnvelopedData(rand.Reader, []byte("x"), sender.key, ecCert, []*x509.Certificate{recipient.cert}); err == nil {
+		t.Error("EncryptEnvelopedData(sender with an ECDSA certificate) error = nil, want error")
+	}
+
+	// A source that runs dry before the content key, the IV, the UKM, the
+	// wrap IV or the ephemeral key of a recipient on another curve.
+	other := newEnvelopeParty(t, 9, "на іншій кривій")
+	for _, n := range []int{10, 35, 100, 104} {
+		random := io.LimitReader(rand.Reader, int64(n))
+		if _, err := pki.EncryptEnvelopedData(random, []byte("x"), sender.key, sender.cert, []*x509.Certificate{recipient.cert}); err == nil {
+			t.Errorf("EncryptEnvelopedData(%d random bytes) error = nil, want error", n)
+		}
+	}
+	if _, err := pki.EncryptEnvelopedData(io.LimitReader(rand.Reader, 40), []byte("x"), sender.key, sender.cert, []*x509.Certificate{other.cert}); err == nil {
+		t.Error("EncryptEnvelopedData(40 random bytes, recipient on another curve) error = nil, want error")
+	}
+}
+
+// testEnvelope mirrors EnvelopedData and its first KeyAgreeRecipientInfo, so
+// that a test can change one field of a valid envelope.
+type testEnvelope struct {
+	Version              int
+	OriginatorInfo       asn1.RawValue   `asn1:"optional,tag:0"`
+	RecipientInfos       []asn1.RawValue `asn1:"set"`
+	EncryptedContentInfo struct {
+		ContentType      asn1.ObjectIdentifier
+		Algorithm        pkix.AlgorithmIdentifier
+		EncryptedContent asn1.RawValue `asn1:"optional,tag:0"`
+	}
+}
+
+type testKARI struct {
+	Version                int
+	Originator             asn1.RawValue `asn1:"explicit,tag:0"` // the whole [0] element
+	UKM                    []byte        `asn1:"optional,explicit,tag:1"`
+	KeyEncryptionAlgorithm pkix.AlgorithmIdentifier
+	RecipientEncryptedKeys []struct {
+		RID          asn1.RawValue
+		EncryptedKey []byte
+	}
+}
+
+// editEnvelope returns der, a ContentInfo with EnvelopedData, after edit
+// has changed the envelope and its first KeyAgreeRecipientInfo.
+func editEnvelope(t *testing.T, der []byte, edit func(ed *testEnvelope, kari *testKARI)) []byte {
+	t.Helper()
+	var ci struct {
+		Type    asn1.ObjectIdentifier
+		Content asn1.RawValue `asn1:"explicit,tag:0"` // the whole [0] element
+	}
+	if _, err := asn1.Unmarshal(der, &ci); err != nil {
+		t.Fatal(err)
+	}
+	var ed testEnvelope
+	if _, err := asn1.Unmarshal(ci.Content.Bytes, &ed); err != nil {
+		t.Fatal(err)
+	}
+	var kari testKARI
+	if _, err := asn1.UnmarshalWithParams(ed.RecipientInfos[0].FullBytes, &kari, "tag:1"); err != nil {
+		t.Fatal(err)
+	}
+	edit(&ed, &kari)
+	kariDER, err := asn1.MarshalWithParams(kari, "tag:1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ed.RecipientInfos[0] = asn1.RawValue{FullBytes: kariDER}
+	return mustMarshal(t, struct {
+		Type    asn1.ObjectIdentifier
+		Content asn1.RawValue
+	}{ci.Type, contextTag(0, mustMarshal(t, ed))})
+}
+
+// contextTag returns the constructed [tag] element with contents.
+func contextTag(tag int, contents []byte) asn1.RawValue {
+	return asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: tag, IsCompound: true, Bytes: contents}
+}
+
+// issuerAndSerial returns the DER IssuerAndSerialNumber of cert.
+func issuerAndSerial(t *testing.T, cert *x509.Certificate) []byte {
+	t.Helper()
+	return mustMarshal(t, struct {
+		Issuer asn1.RawValue
+		Serial *big.Int
+	}{asn1.RawValue{FullBytes: cert.RawIssuer}, cert.SerialNumber})
+}
+
+func TestDecryptEnvelopedDataForms(t *testing.T) {
+	sender := newEnvelopeParty(t, 6, "відправник")
+	same := newEnvelopeParty(t, 6, "одержувач на тій самій кривій")
+	other := newEnvelopeParty(t, 9, "одержувач на іншій кривій")
+	content := []byte("Конверт, записаний інакше.")
+	toSame, err := pki.EncryptEnvelopedData(rand.Reader, content, sender.key, sender.cert, []*x509.Certificate{same.cert})
+	if err != nil {
+		t.Fatal(err)
+	}
+	toOther, err := pki.EncryptEnvelopedData(rand.Reader, content, sender.key, sender.cert, []*x509.Certificate{other.cert})
+	if err != nil {
+		t.Fatal(err)
+	}
+	senderPub, err := pki.ParsePublicKey(sender.cert.RawSubjectPublicKeyInfo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	samePub, err := pki.ParsePublicKey(same.cert.RawSubjectPublicKeyInfo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if same.cert.SubjectKeyId == nil {
+		t.Fatal("the recipient certificate has no subject key identifier")
+	}
+
+	tests := []struct {
+		name  string
+		der   []byte
+		to    envelopeParty
+		certs []*x509.Certificate
+	}{
+		{"sender certificate in OriginatorInfo", editEnvelope(t, toSame, func(ed *testEnvelope, _ *testKARI) {
+			ed.OriginatorInfo = contextTag(0, mustMarshal(t, contextTag(0, sender.cert.Raw)))
+		}), same, nil},
+		{"recipient by subject key identifier", editEnvelope(t, toSame, func(_ *testEnvelope, kari *testKARI) {
+			kari.RecipientEncryptedKeys[0].RID = contextTag(0, mustMarshal(t, same.cert.SubjectKeyId))
+		}), same, []*x509.Certificate{sender.cert}},
+		{"other kinds of recipients first", editEnvelope(t, toSame, func(ed *testEnvelope, _ *testKARI) {
+			// a SEQUENCE, as KeyTransRecipientInfo is, sorts first in the SET
+			ed.RecipientInfos = append(ed.RecipientInfos, asn1.RawValue{FullBytes: mustMarshal(t, struct{ V int }{0})})
+		}), same, []*x509.Certificate{sender.cert}},
+		{"content in chunks", editEnvelope(t, toSame, func(ed *testEnvelope, _ *testKARI) {
+			enc := ed.EncryptedContentInfo.EncryptedContent.Bytes
+			ed.EncryptedContentInfo.EncryptedContent = contextTag(0, append(mustMarshal(t, enc[:5]), mustMarshal(t, enc[5:])...))
+		}), same, []*x509.Certificate{sender.cert}},
+		{"content in gamma mode", editEnvelope(t, toSame, func(ed *testEnvelope, kari *testKARI) {
+			// The content key, unwrapped as the recipient does.
+			kek, err := pki.EnvelopeKEK(same.key, senderPub.Key, kari.UKM)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cek, err := pki.GOST28147Unwrap(kek, kari.RecipientEncryptedKeys[0].EncryptedKey, samePub.DKE)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var params struct{ IV, DKE []byte }
+			if _, err := asn1.Unmarshal(ed.EncryptedContentInfo.Algorithm.Parameters.FullBytes, &params); err != nil {
+				t.Fatal(err)
+			}
+			block, err := gost28147.NewCipher(cek, senderPub.DKE)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stream, err := gost28147.NewCTR(block, params.IV)
+			if err != nil {
+				t.Fatal(err)
+			}
+			enc := make([]byte, len(content))
+			stream.XORKeyStream(enc, content)
+			ed.EncryptedContentInfo.Algorithm.Algorithm = asn1.ObjectIdentifier{1, 2, 804, 2, 1, 1, 1, 1, 1, 1, 2}
+			ed.EncryptedContentInfo.EncryptedContent = asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: 0, Bytes: enc}
+		}), same, []*x509.Certificate{sender.cert}},
+		{"ephemeral key big-endian", editEnvelope(t, toOther, func(_ *testEnvelope, kari *testKARI) {
+			var opk struct {
+				Algorithm pkix.AlgorithmIdentifier
+				PublicKey asn1.BitString
+			}
+			if _, err := asn1.UnmarshalWithParams(kari.Originator.Bytes, &opk, "tag:1"); err != nil {
+				t.Fatal(err)
+			}
+			var point []byte
+			if _, err := asn1.Unmarshal(opk.PublicKey.Bytes, &point); err != nil {
+				t.Fatal(err)
+			}
+			slices.Reverse(point)
+			octets := mustMarshal(t, point)
+			opk.Algorithm.Algorithm = asn1.ObjectIdentifier{1, 2, 804, 2, 1, 1, 1, 1, 3, 1, 1, 1, 1}
+			opk.PublicKey = asn1.BitString{Bytes: octets, BitLength: 8 * len(octets)}
+			der, err := asn1.MarshalWithParams(opk, "tag:1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			kari.Originator = contextTag(0, der)
+		}), other, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := pki.DecryptEnvelopedData(tt.der, tt.to.key, tt.to.cert, tt.certs)
+			if err != nil || !bytes.Equal(got, content) {
+				t.Errorf("DecryptEnvelopedData(%s) = %q, %v, want %q", tt.name, got, err, content)
+			}
+		})
+	}
+}
+
+func TestDecryptEnvelopedDataMalformed(t *testing.T) {
+	sender := newEnvelopeParty(t, 6, "відправник")
+	same := newEnvelopeParty(t, 6, "одержувач")
+	other := newEnvelopeParty(t, 9, "на іншій кривій")
+	ecCert := newECDSACert(t)
+	der, err := pki.EncryptEnvelopedData(rand.Reader, []byte("x"), sender.key, sender.cert, []*x509.Certificate{same.cert})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ephemeral, err := pki.EncryptEnvelopedData(rand.Reader, []byte("x"), sender.key, sender.cert, []*x509.Certificate{other.cert})
+	if err != nil {
+		t.Fatal(err)
+	}
+	edit := func(f func(ed *testEnvelope, kari *testKARI)) []byte { return editEnvelope(t, der, f) }
+	originator := func(opk any) func(*testEnvelope, *testKARI) {
+		return func(_ *testEnvelope, kari *testKARI) {
+			kari.Originator = contextTag(0, mustMarshal(t, opk))
+		}
+	}
+	ephemeralKey := func(alg asn1.ObjectIdentifier, key []byte) []byte {
+		return editEnvelope(t, ephemeral, func(_ *testEnvelope, kari *testKARI) {
+			opk, err := asn1.MarshalWithParams(struct {
+				Algorithm pkix.AlgorithmIdentifier
+				PublicKey asn1.BitString
+			}{pkix.AlgorithmIdentifier{Algorithm: alg}, asn1.BitString{Bytes: key, BitLength: 8 * len(key)}}, "tag:1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			kari.Originator = contextTag(0, opk)
+		})
+	}
+	dstu4145le := asn1.ObjectIdentifier{1, 2, 804, 2, 1, 1, 1, 1, 3, 1, 1}
+	contentAlgorithm := func(alg pkix.AlgorithmIdentifier) []byte {
+		return edit(func(ed *testEnvelope, _ *testKARI) { ed.EncryptedContentInfo.Algorithm = alg })
+	}
+	cfb := asn1.ObjectIdentifier{1, 2, 804, 2, 1, 1, 1, 1, 1, 1, 3}
+
+	tests := []struct {
+		name  string
+		der   []byte
+		to    envelopeParty
+		cert  *x509.Certificate // the recipient certificate when not to.cert
+		certs []*x509.Certificate
+	}{
+		{name: "truncated", der: der[:len(der)-1], to: same},
+		{name: "not a ContentInfo", der: mustMarshal(t, 5), to: same},
+		{name: "malformed EnvelopedData", der: mustMarshal(t, struct {
+			Type    asn1.ObjectIdentifier
+			Content asn1.RawValue
+		}{asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 7, 3}, contextTag(0, mustMarshal(t, 5))}), to: same},
+		{name: "recipient certificate with an ECDSA key", der: der, to: same, cert: ecCert},
+		{name: "malformed KeyAgreeRecipientInfo", der: edit(func(ed *testEnvelope, _ *testKARI) {
+			ed.RecipientInfos = append(ed.RecipientInfos, contextTag(1, mustMarshal(t, 5)))
+		}), to: same, certs: []*x509.Certificate{sender.cert}},
+		{name: "malformed RecipientKeyIdentifier", der: edit(func(_ *testEnvelope, kari *testKARI) {
+			kari.RecipientEncryptedKeys[0].RID = contextTag(0, mustMarshal(t, 5))
+		}), to: same, certs: []*x509.Certificate{sender.cert}},
+		{name: "another key agreement", der: edit(func(_ *testEnvelope, kari *testKARI) {
+			kari.KeyEncryptionAlgorithm.Algorithm = asn1.ObjectIdentifier{1, 2, 3}
+		}), to: same, certs: []*x509.Certificate{sender.cert}},
+		{name: "another key wrap", der: edit(func(_ *testEnvelope, kari *testKARI) {
+			kari.KeyEncryptionAlgorithm.Parameters = asn1.RawValue{FullBytes: mustMarshal(t, pkix.AlgorithmIdentifier{Algorithm: asn1.ObjectIdentifier{1, 2, 3}})}
+		}), to: same, certs: []*x509.Certificate{sender.cert}},
+		{name: "primitive OriginatorInfo", der: edit(func(ed *testEnvelope, _ *testKARI) {
+			ed.OriginatorInfo = asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: 0, Bytes: []byte{1}}
+		}), to: same, certs: []*x509.Certificate{sender.cert}},
+		{name: "malformed certificate in OriginatorInfo", der: edit(func(ed *testEnvelope, _ *testKARI) {
+			ed.OriginatorInfo = contextTag(0, mustMarshal(t, contextTag(0, mustMarshal(t, struct{ A int }{5}))))
+		}), to: same, certs: []*x509.Certificate{sender.cert}},
+		{name: "truncated originator", der: edit(func(_ *testEnvelope, kari *testKARI) {
+			kari.Originator = contextTag(0, []byte{0x30})
+		}), to: same},
+		{name: "originator named by an INTEGER", der: edit(originator(5)), to: same, certs: []*x509.Certificate{sender.cert}},
+		{name: "truncated certificate in OriginatorInfo", der: edit(func(ed *testEnvelope, _ *testKARI) {
+			ed.OriginatorInfo = contextTag(0, mustMarshal(t, contextTag(0, []byte{0x30})))
+		}), to: same, certs: []*x509.Certificate{sender.cert}},
+		{name: "originator with an ECDSA key", der: edit(func(_ *testEnvelope, kari *testKARI) {
+			kari.Originator = contextTag(0, issuerAndSerial(t, ecCert))
+		}), to: same, certs: []*x509.Certificate{ecCert}},
+		{name: "originator on another curve", der: edit(func(_ *testEnvelope, kari *testKARI) {
+			kari.Originator = contextTag(0, issuerAndSerial(t, other.cert))
+		}), to: same, certs: []*x509.Certificate{other.cert}},
+		{name: "malformed ephemeral key", der: edit(originator(contextTag(1, mustMarshal(t, 5)))), to: same},
+		{name: "ephemeral key of another algorithm", der: ephemeralKey(asn1.ObjectIdentifier{1, 2, 3}, mustMarshal(t, []byte{1})), to: other},
+		{name: "ephemeral key not an OCTET STRING", der: ephemeralKey(dstu4145le, mustMarshal(t, 5)), to: other},
+		{name: "no encrypted content", der: edit(func(ed *testEnvelope, _ *testKARI) {
+			ed.EncryptedContentInfo.EncryptedContent = asn1.RawValue{}
+		}), to: same, certs: []*x509.Certificate{sender.cert}},
+		{name: "malformed content chunk", der: edit(func(ed *testEnvelope, _ *testKARI) {
+			ed.EncryptedContentInfo.EncryptedContent = contextTag(0, mustMarshal(t, 5))
+		}), to: same, certs: []*x509.Certificate{sender.cert}},
+		{name: "malformed content parameters", der: contentAlgorithm(pkix.AlgorithmIdentifier{Algorithm: cfb, Parameters: asn1.NullRawValue}),
+			to: same, certs: []*x509.Certificate{sender.cert}},
+		{name: "another content cipher", der: contentAlgorithm(pkix.AlgorithmIdentifier{Algorithm: asn1.ObjectIdentifier{1, 2, 3},
+			Parameters: asn1.RawValue{FullBytes: mustMarshal(t, struct{ IV []byte }{make([]byte, 8)})}}), to: same, certs: []*x509.Certificate{sender.cert}},
+		{name: "content IV of 7 bytes", der: contentAlgorithm(pkix.AlgorithmIdentifier{Algorithm: cfb,
+			Parameters: asn1.RawValue{FullBytes: mustMarshal(t, struct{ IV []byte }{make([]byte, 7)})}}), to: same, certs: []*x509.Certificate{sender.cert}},
+		{name: "malformed content DKE", der: contentAlgorithm(pkix.AlgorithmIdentifier{Algorithm: cfb,
+			Parameters: asn1.RawValue{FullBytes: mustMarshal(t, struct{ IV, DKE []byte }{make([]byte, 8), []byte{1}})}}), to: same, certs: []*x509.Certificate{sender.cert}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cert := tt.to.cert
+			if tt.cert != nil {
+				cert = tt.cert
+			}
+			if got, err := pki.DecryptEnvelopedData(tt.der, tt.to.key, cert, tt.certs); err == nil {
+				t.Errorf("DecryptEnvelopedData(%s) = %q, want error", tt.name, got)
 			}
 		})
 	}

@@ -124,12 +124,16 @@ func (g *GCM) keystream(nonce []byte) *ctr {
 func (g *GCM) tag(nonce, additionalData, ciphertext []byte) []byte {
 	acc := make([]uint64, g.block.BlockSize()/8)
 	aadLen := uint64(len(additionalData))
-	if g.bindNonce {
-		g.absorb(acc, nonce)
-		aadLen += uint64(len(nonce))
-	}
-	g.absorb(acc, additionalData)
-	g.absorb(acc, ciphertext)
+	// On Apple M-series cores GHASH over all-zero data runs measurably
+	// faster than over random data (internal/ctcheck); the flag removes it.
+	subtle.WithDataIndependentTiming(func() {
+		if g.bindNonce {
+			g.absorb(acc, nonce)
+			aadLen += uint64(len(nonce))
+		}
+		g.absorb(acc, additionalData)
+		g.absorb(acc, ciphertext)
+	})
 	acc[0] ^= aadLen << 3
 	acc[len(acc)/2] ^= uint64(len32(len(ciphertext))) << 3
 	buf := make([]byte, g.block.BlockSize())

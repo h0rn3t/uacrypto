@@ -10,7 +10,7 @@ import (
 
 // SignContent lets tests sign content types other than data, as a TSA signs TSTInfo.
 func SignContent(random io.Reader, contentType asn1.ObjectIdentifier, content []byte, key *dstu4145.PrivateKey, cert *x509.Certificate, opts SignOptions) ([]byte, error) {
-	sd, err := signContent(random, contentType, content, key, cert, opts)
+	sd, err := signContent(random, contentType, content, key, cert, opts, true)
 	if err != nil {
 		return nil, err
 	}
