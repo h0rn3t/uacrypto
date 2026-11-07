@@ -177,3 +177,21 @@ func TestPRNGSignsAndVerifies(t *testing.T) {
 		t.Error("Verify of a signature made with the PRNG = false, want true")
 	}
 }
+
+func TestPRNGDestroy(t *testing.T) {
+	g := newPRNG(testSeed(), fixedClock(1700000000))
+	g.Destroy()
+	g.Destroy() // idempotent
+	if g.state != [8]byte{} || g.start != [8]byte{} || g.t != [8]byte{} {
+		t.Errorf("after Destroy state, start, t = %x, %x, %x, want all zero", g.state, g.start, g.t)
+	}
+	g.Seed([]byte("must not revive the generator"))
+	for _, n := range []int{0, 4} {
+		if got, err := g.Read(make([]byte, n)); got != 0 || !errors.Is(err, errPRNGDestroyed) {
+			t.Errorf("Read(%d bytes) after Destroy = %d, %v, want 0, %v", n, got, err, errPRNGDestroyed)
+		}
+	}
+	if _, err := GenerateKey(mustCurve(t, M257), g); !errors.Is(err, errPRNGDestroyed) {
+		t.Errorf("GenerateKey with a destroyed PRNG error = %v, want %v", err, errPRNGDestroyed)
+	}
+}

@@ -2,11 +2,13 @@ package pki_test
 
 import (
 	"bytes"
+	"compress/zlib"
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/asn1"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -125,7 +127,7 @@ func TestVerifyPAdESRejects(t *testing.T) {
 		{name: "range beyond the file", pdf: replace("[ 0 29494 49976 399 ", "[ 0 29494 49976 499 ")},
 		{name: "other subfilter", pdf: replace("/SubFilter /ETSI.CAdES.detached", "/SubFilter /adbe.pkcs7.sha1     "), unsup: true},
 		{name: "no signature", pdf: czoTestPDF(t)},
-		{name: "xref stream", pdf: []byte("%PDF-1.7\n1 0 obj\n<</Type/XRef>>\nendobj\nstartxref\n9\n%%EOF\n"), unsup: true},
+		{name: "xref stream without stream", pdf: []byte("%PDF-1.7\n1 0 obj\n<</Type/XRef>>\nendobj\nstartxref\n9\n%%EOF\n")},
 		{name: "prev loop", pdf: []byte("%PDF-1.7\nxref\n0 0\ntrailer\n<</Prev 9>>\nstartxref\n9\n%%EOF\n")},
 		{name: "deep nesting", pdf: []byte("%PDF-1.7\nxref\n0 0\ntrailer\n" + strings.Repeat("[", 10000) + "\nstartxref\n9\n%%EOF\n")},
 		{name: "truncated", pdf: sample[:len(sample)-100]},
@@ -243,7 +245,11 @@ func TestSignPAdESRejects(t *testing.T) {
 		unsup bool
 	}{
 		{name: "other key", pdf: czoTestPDF(t), key: other},
-		{name: "xref stream", pdf: []byte("%PDF-1.7\n1 0 obj\n<</Type/XRef>>\nendobj\nstartxref\n9\n%%EOF\n"), key: s, unsup: true},
+		{name: "xref stream without stream", pdf: []byte("%PDF-1.7\n1 0 obj\n<</Type/XRef>>\nendobj\nstartxref\n9\n%%EOF\n"), key: s},
+		{name: "xref field wider than 8 bytes", pdf: editCairo(t, "/W [1 2 2]", "/W [1 9 2]"), key: s},
+		{name: "xref entries beyond the stream", pdf: editCairo(t, "/Size 27", "/Size 99"), key: s},
+		{name: "object stream index", pdf: editCairo(t, "/N 4", "/N 2"), key: s},
+		{name: "TIFF predictor", pdf: bytes.Replace(hybridPDF(t), []byte("/Predictor 12"), []byte("/Predictor 02"), 1), key: s, unsup: true},
 		{name: "encrypted", pdf: []byte("%PDF-1.7\nxref\n0 0\ntrailer\n<</Size 1/Root 1 0 R/Encrypt 2 0 R>>\nstartxref\n9\n%%EOF\n"), key: s, unsup: true},
 		{name: "not a PDF", pdf: []byte("hello"), key: s},
 	}
@@ -269,6 +275,11 @@ func FuzzVerifyPAdES(f *testing.F) {
 	}
 	f.Add(sample)
 	f.Add([]byte("xref\n0 1\n0000000000 65535 f\ntrailer\n<</Root 1 0 R>>\nstartxref\n0\n"))
+	cairo, err := os.ReadFile(filepath.Join("testdata", "cairo-xref-stream.pdf"))
+	if err != nil {
+		f.Fatal(err)
+	}
+	f.Add(cairo)
 	f.Fuzz(func(t *testing.T, pdf []byte) {
 		_, _ = pki.VerifyPAdES(pdf, nil) // only the absence of a panic is checked
 	})
@@ -293,4 +304,230 @@ func padesCMS(t *testing.T, pdf []byte) [][]byte {
 		cms = append(cms, raw.FullBytes)
 	}
 	return cms
+}
+
+// TestAddPAdESLongTerm turns a PAdES-B-T signature into B-LT and then B-LTA
+// and checks the result as the ЦЗО examples are laid out: a /DSS with /Certs
+// and /OCSPs and no /VRI (the signer's CA path, the TSA certificate, the
+// OCSP responders; a response about every certificate of the paths but the
+// roots), then a document time-stamp with /SubFilter /ETSI.RFC3161.
+func TestAddPAdESLongTerm(t *testing.T) {
+	p := newTestPath(t, "")
+	fake, tsa := newFakeTSA(t, "")
+	bt, err := pki.SignPAdES(t.Context(), rand.Reader, czoTestPDF(t), p.leaf.key, p.leaf.cert, pki.SignOptions{}, tsa)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certs := []*x509.Certificate{p.ca.cert, p.root.cert}
+	blt, err := pki.AddPAdESValidationData(t.Context(), bt, certs, &pki.OCSPClient{})
+	if err != nil {
+		t.Fatalf("AddPAdESValidationData() error = %v", err)
+	}
+	if !bytes.HasPrefix(blt, bt) {
+		t.Fatal("AddPAdESValidationData() changed the document instead of appending an update")
+	}
+	update := string(blt[len(bt):])
+	dss := regexp.MustCompile(`<</Certs \[([0-9 R]*)\] /OCSPs \[([0-9 R]*)\] /Type /DSS >>`).FindStringSubmatch(update)
+	if dss == nil || !regexp.MustCompile(`/DSS \d+ 0 R`).MatchString(update) {
+		t.Fatalf("AddPAdESValidationData() update has no /DSS of the catalog with /Certs and /OCSPs only:\n%.600s", update)
+	}
+	// CA, root, TSA; the CAs answer OCSP themselves; the fake TSA is self-signed
+	if certRefs, ocspRefs := strings.Count(dss[1], "R"), strings.Count(dss[2], "R"); certRefs != 3 || ocspRefs != 2 {
+		t.Errorf("AddPAdESValidationData() DSS = %d certificates and %d OCSP responses, want 3 and 2", certRefs, ocspRefs)
+	}
+	if n := strings.Count(update, "/Filter /FlateDecode"); n != 5 {
+		t.Errorf("AddPAdESValidationData() wrote %d FlateDecode streams, want 5", n)
+	}
+
+	// the DSS makes the signature self-contained: no certificates from the caller
+	sigs, err := pki.VerifyPAdES(blt, nil)
+	if err != nil {
+		t.Fatalf("VerifyPAdES(B-LT) error = %v", err)
+	}
+	sg := sigs[0].Signer
+	wantChain := []*x509.Certificate{p.leaf.cert, p.ca.cert, p.root.cert}
+	if len(sigs) != 1 || !slices.EqualFunc(sg.Chain, wantChain, (*x509.Certificate).Equal) ||
+		len(sg.OCSP) != 2 || sg.OCSP[0] == nil || sg.OCSP[0].Status != pki.OCSPGood || sg.OCSP[1] == nil || sg.OCSP[1].Status != pki.OCSPGood {
+		t.Errorf("VerifyPAdES(B-LT) = %d signatures, chain of %d, OCSP %+v, want signer, CA, root, good responses about the signer and the CA",
+			len(sigs), len(sg.Chain), sg.OCSP)
+	}
+	if _, err := pki.AddPAdESValidationData(t.Context(), blt, certs, &pki.OCSPClient{}); err == nil {
+		t.Error("AddPAdESValidationData(B-LT) error = nil, want error: the document already has a DSS")
+	}
+
+	blta, err := pki.AddPAdESDocumentTimeStamp(t.Context(), blt, tsa)
+	if err != nil {
+		t.Fatalf("AddPAdESDocumentTimeStamp() error = %v", err)
+	}
+	if !bytes.HasPrefix(blta, blt) {
+		t.Fatal("AddPAdESDocumentTimeStamp() changed the document instead of appending an update")
+	}
+	if !regexp.MustCompile(`<</Type /DocTimeStamp /Filter /Adobe.PPKLite /SubFilter /ETSI.RFC3161 /M <[0-9A-F]+> /ByteRange \[0 \d+ \d+ \d+\] +/Contents <[0-9A-F]+>>>`).Match(blta[len(blt):]) {
+		t.Errorf("AddPAdESDocumentTimeStamp() update has no document time-stamp dictionary:\n%.400s", blta[len(blt):])
+	}
+	sigs, err = pki.VerifyPAdES(blta, nil)
+	if err != nil {
+		t.Fatalf("VerifyPAdES(B-LTA) error = %v", err)
+	}
+	if len(sigs) != 2 || sigs[0].CoversDocument || sigs[0].Signer.Chain == nil {
+		t.Fatalf("VerifyPAdES(B-LTA) = %+v, want the B-LT signature, no longer covering the document", sigs)
+	}
+	ts := sigs[1]
+	if ts.SubFilter != "ETSI.RFC3161" || !ts.CoversDocument || ts.Signer.TimeStamp == nil || !ts.Signer.TimeStamp.Certificate.Equal(fake.signer.cert) {
+		t.Errorf("VerifyPAdES(B-LTA) document time-stamp = %+v, want ETSI.RFC3161 by the fake TSA over the whole document", ts)
+	}
+}
+
+func TestAddPAdESValidationDataRejects(t *testing.T) {
+	_, tsa := newFakeTSA(t, "")
+	sign := func(p testPath, tsa *pki.TSAClient) []byte {
+		t.Helper()
+		pdf, err := pki.SignPAdES(t.Context(), rand.Reader, czoTestPDF(t), p.leaf.key, p.leaf.cert, pki.SignOptions{}, tsa)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return pdf
+	}
+	good, revoked := newTestPath(t, ""), newTestPath(t, "revoked")
+	tests := []struct {
+		name  string
+		pdf   []byte
+		certs []*x509.Certificate
+	}{
+		{"no signature time-stamp", sign(good, nil), []*x509.Certificate{good.ca.cert, good.root.cert}},
+		{"no path to a root", sign(good, tsa), []*x509.Certificate{good.ca.cert}},
+		{"revoked signer", sign(revoked, tsa), []*x509.Certificate{revoked.ca.cert, revoked.root.cert}},
+		{"not signed", czoTestPDF(t), nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := pki.AddPAdESValidationData(t.Context(), tt.pdf, tt.certs, &pki.OCSPClient{}); err == nil {
+				t.Errorf("AddPAdESValidationData(%s) error = nil, want error", tt.name)
+			}
+		})
+	}
+}
+
+// editCairo returns cairo-xref-stream.pdf with old replaced by repl.
+func editCairo(t *testing.T, old, repl string) []byte {
+	t.Helper()
+	pdf := readTestdata(t, "cairo-xref-stream.pdf")
+	if !bytes.Contains(pdf, []byte(old)) {
+		t.Fatalf("cairo-xref-stream.pdf has no %q", old)
+	}
+	return bytes.Replace(pdf, []byte(old), []byte(repl), 1)
+}
+
+// TestPAdESXrefStream signs a document whose catalog, page tree and page sit
+// in an object stream behind a cross-reference stream (cairo writes them so)
+// up to PAdES-B-LTA. Each update is a cross-reference stream too, as the
+// document's last section is.
+func TestPAdESXrefStream(t *testing.T) {
+	doc := readTestdata(t, "cairo-xref-stream.pdf")
+	p := newTestPath(t, "")
+	_, tsa := newFakeTSA(t, "")
+	bt, err := pki.SignPAdES(t.Context(), rand.Reader, doc, p.leaf.key, p.leaf.cert, pki.SignOptions{}, tsa)
+	if err != nil {
+		t.Fatalf("SignPAdES(xref stream) error = %v", err)
+	}
+	blt, err := pki.AddPAdESValidationData(t.Context(), bt, []*x509.Certificate{p.ca.cert, p.root.cert}, &pki.OCSPClient{})
+	if err != nil {
+		t.Fatalf("AddPAdESValidationData(xref stream) error = %v", err)
+	}
+	blta, err := pki.AddPAdESDocumentTimeStamp(t.Context(), blt, tsa)
+	if err != nil {
+		t.Fatalf("AddPAdESDocumentTimeStamp(xref stream) error = %v", err)
+	}
+	for _, u := range []struct{ name, before, after string }{
+		{"SignPAdES", string(doc), string(bt)},
+		{"AddPAdESValidationData", string(bt), string(blt)},
+		{"AddPAdESDocumentTimeStamp", string(blt), string(blta)},
+	} {
+		update, ok := strings.CutPrefix(u.after, u.before)
+		if !ok {
+			t.Fatalf("%s(xref stream) changed the document instead of appending an update", u.name)
+		}
+		if !strings.Contains(update, "/Type /XRef") || strings.Contains(update, "trailer") {
+			t.Errorf("%s(xref stream) update ends without a cross-reference stream:\n%.300s", u.name, update[max(0, len(update)-300):])
+		}
+	}
+	sigs, err := pki.VerifyPAdES(blta, nil)
+	if err != nil {
+		t.Fatalf("VerifyPAdES(xref stream B-LTA) error = %v", err)
+	}
+	if len(sigs) != 2 || sigs[0].SubFilter != "ETSI.CAdES.detached" || sigs[0].Signer.Chain == nil || sigs[0].Signer.TimeStamp == nil ||
+		sigs[1].SubFilter != "ETSI.RFC3161" || !sigs[1].CoversDocument {
+		t.Errorf("VerifyPAdES(xref stream B-LTA) = %+v, want the B-LT signature and a document time-stamp over the whole document", sigs)
+	}
+}
+
+// hybridPDF is a hybrid-reference file (ISO 32000-1, 7.5.8.4) written by
+// hand. Its table holds object stream 1 and cross-reference stream 7;
+// stream 7, which /XRefStm names, gives objects 2 to 6, the catalog first,
+// as the objects of stream 1. The rows of stream 7, W
+// [1 2 1], are 02 0001 00 to 02 0001 04, encoded with the PNG filters Sub,
+// Up, Average, Paeth and None (PNG 1.2, 6.3), worked out by hand.
+func hybridPDF(t *testing.T) []byte {
+	t.Helper()
+	objs := []string{"<</Type/Catalog/Pages 3 0 R>>", "<</Type/Pages/Kids[6 0 R]/Count 1>>", "<</Producer(hand)>>", "<<>>", "<</Type/Page/Parent 3 0 R/MediaBox[0 0 100 100]>>"}
+	var header, body strings.Builder
+	for i, o := range objs {
+		fmt.Fprintf(&header, "%d %d ", i+2, body.Len())
+		body.WriteString(o + " ")
+	}
+	rows := []byte{
+		1, 0x02, 0xfe, 0x01, 0xff, // Sub
+		2, 0x00, 0x00, 0x00, 0x01, // Up
+		3, 0x01, 0xff, 0x01, 0x01, // Average
+		4, 0x00, 0x00, 0x00, 0x01, // Paeth
+		0, 0x02, 0x00, 0x01, 0x04, // None
+	}
+	var z bytes.Buffer
+	w := zlib.NewWriter(&z)
+	if _, err := w.Write(rows); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	var b bytes.Buffer
+	b.WriteString("%PDF-1.5\n")
+	off1 := b.Len()
+	fmt.Fprintf(&b, "1 0 obj\n<</Type/ObjStm/N %d/First %d/Length %d>>\nstream\n%s%s\nendstream\nendobj\n", len(objs), header.Len(), header.Len()+body.Len(), header.String(), body.String())
+	off7 := b.Len()
+	fmt.Fprintf(&b, "7 0 obj\n<</Type/XRef/Size 8/W[1 2 1]/Index[2 5]/Filter/FlateDecode/DecodeParms<</Predictor 12/Columns 4>>/Length %d>>\nstream\n", z.Len())
+	b.Write(z.Bytes())
+	b.WriteString("\nendstream\nendobj\n")
+	xref := b.Len()
+	fmt.Fprintf(&b, "xref\n0 2\n0000000000 65535 f\r\n%010d 00000 n\r\n7 1\n%010d 00000 n\r\n", off1, off7)
+	fmt.Fprintf(&b, "trailer\n<</Size 8/Root 2 0 R/Info 4 0 R/XRefStm %d>>\nstartxref\n%d\n%%%%EOF\n", off7, xref)
+	return b.Bytes()
+}
+
+// In a hybrid file the objects of the /XRefStm stream fill the gaps of the
+// table of the same revision.
+func TestSignPAdESHybrid(t *testing.T) {
+	s := newTestSigner(t)
+	doc := hybridPDF(t)
+	// a free entry in the table wins over the stream, as in poppler and pdf.js
+	freed := bytes.Replace(doc, []byte("xref\n0 2\n"), []byte("xref\n2 1\n0000000000 00000 f\r\n0 2\n"), 1)
+	if _, err := pki.SignPAdES(t.Context(), rand.Reader, freed, s.key, s.cert, pki.SignOptions{}, nil); err == nil {
+		t.Error("SignPAdES(hybrid, catalog free in the table) error = nil, want error")
+	}
+	signed, err := pki.SignPAdES(t.Context(), rand.Reader, doc, s.key, s.cert, pki.SignOptions{}, nil)
+	if err != nil {
+		t.Fatalf("SignPAdES(hybrid) error = %v", err)
+	}
+	update, ok := strings.CutPrefix(string(signed), string(doc))
+	if !ok || !strings.Contains(update, "\nxref\n") || !strings.Contains(update, "/Info 4 0 R") || !strings.Contains(update, "/P 6 0 R") {
+		t.Errorf("SignPAdES(hybrid) update = %q, want an appended update with a field on page 6 and a table that keeps /Info", update[:min(len(update), 300)])
+	}
+	sigs, err := pki.VerifyPAdES(signed, nil)
+	if err != nil {
+		t.Fatalf("VerifyPAdES(SignPAdES(hybrid)) error = %v", err)
+	}
+	if len(sigs) != 1 || !sigs[0].CoversDocument {
+		t.Errorf("VerifyPAdES(SignPAdES(hybrid)) = %+v, want one signature over the whole document", sigs)
+	}
 }

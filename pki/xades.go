@@ -23,10 +23,11 @@ import (
 
 // The URIs of XML signatures that XAdES of IIT uses.
 const (
-	nsXAdES   = "http://uri.etsi.org/01903/v1.3.2#"
-	nsXML     = "http://www.w3.org/XML/1998/namespace"
-	excC14N   = "http://www.w3.org/2001/10/xml-exc-c14n#"
-	enveloped = "http://www.w3.org/2000/09/xmldsig#enveloped-signature"
+	nsXAdES    = "http://uri.etsi.org/01903/v1.3.2#"
+	nsXAdES141 = "http://uri.etsi.org/01903/v1.4.1#"
+	nsXML      = "http://www.w3.org/XML/1998/namespace"
+	excC14N    = "http://www.w3.org/2001/10/xml-exc-c14n#"
+	enveloped  = "http://www.w3.org/2000/09/xmldsig#enveloped-signature"
 
 	signedPropertiesType = "http://uri.etsi.org/01903#SignedProperties"
 
@@ -53,8 +54,12 @@ const maxXMLDepth = 256
 // SigningCertificate) property names. A SignatureTimeStamp is verified over
 // the canonical ds:SignatureValue and becomes Signer.TimeStamp; the
 // CertificateValues and RevocationValues of B-LT, with certs, make
-// Signer.Chain and Signer.OCSP, as for CAdES-X Long. The ArchiveTimeStamp of
-// B-LTA is not checked. SigningTime is what the signer claims.
+// Signer.Chain and Signer.OCSP, as for CAdES-X Long. Each ArchiveTimeStamp of
+// B-LTA is verified over the input of ETSI EN 319 132-1, 5.5.2.2: the data of
+// every reference, the canonical ds:SignedInfo, ds:SignatureValue and
+// ds:KeyInfo, the unsigned signature properties before it, and the
+// ds:Object elements other than the one of xades:QualifyingProperties; they
+// become Signer.ArchiveTimeStamps. SigningTime is what the signer claims.
 //
 // Documents with a DOCTYPE, an Id that appears twice, or nesting deeper than
 // 256 elements are rejected; transforms other than the enveloped signature
@@ -101,12 +106,14 @@ func verifyXMLSignature(root *xmlElement, ids map[string]*xmlElement, sig *xmlEl
 
 	var signedURIs []string
 	var signedProps *xmlElement
+	var referenced []byte // the first part of the input of an ArchiveTimeStamp
 	for _, ref := range signedInfo.children(xmldsNamespace, "Reference") {
 		uri := ref.attr("URI")
 		target, err := referencedData(root, ids, sig, ref, files)
 		if err != nil {
 			return nil, signer, fmt.Errorf("reference %q: %w", uri, err)
 		}
+		referenced = append(referenced, target.data...)
 		if err := checkDigest(ref.child(xmldsNamespace, "DigestMethod").attr("Algorithm"), ref.child(xmldsNamespace, "DigestValue").text(), target.data); err != nil {
 			return nil, signer, fmt.Errorf("reference %q: %w", uri, err)
 		}
@@ -180,7 +187,64 @@ func verifyXMLSignature(root *xmlElement, ids map[string]*xmlElement, sig *xmlEl
 	if signer.Chain, signer.OCSP, err = long.verify(cert, pool); err != nil {
 		return nil, signer, fmt.Errorf("validation data: %w", err)
 	}
+	if signer.ArchiveTimeStamps, err = verifyArchiveTimeStamps(sig, unsigned, referenced, pool); err != nil {
+		return nil, signer, err
+	}
 	return signedURIs, signer, nil
+}
+
+// verifyArchiveTimeStamps verifies the ArchiveTimeStamp properties among
+// unsigned, the unsigned signature properties of sig, each over the input of
+// ETSI EN 319 132-1, 5.5.2.2, that starts with referenced, the data of the
+// references of sig.
+func verifyArchiveTimeStamps(sig, unsigned *xmlElement, referenced []byte, pool []*x509.Certificate) ([]*TimeStamp, error) {
+	signature, objects := archiveTimeStampParts(sig)
+	input := slices.Concat(referenced, signature)
+	var stamps []*TimeStamp
+	for _, c := range unsigned.content {
+		prop, ok := c.(*xmlElement)
+		if !ok {
+			continue
+		}
+		if !prop.is(nsXAdES141, "ArchiveTimeStamp") {
+			input = append(input, canonical(prop, nil)...)
+			continue
+		}
+		if alg := prop.child(xmldsNamespace, "CanonicalizationMethod").attr("Algorithm"); alg != excC14N {
+			return nil, fmt.Errorf("archive time-stamp canonicalization %q: %w", alg, errors.ErrUnsupported)
+		}
+		token, err := base64Text(prop.child(nsXAdES, "EncapsulatedTimeStamp"))
+		if err != nil {
+			return nil, fmt.Errorf("archive time-stamp %d: %w", len(stamps), err)
+		}
+		ts, _, err := verifyTimeStamp(token, append(slices.Clone(input), objects...), pool)
+		if err != nil {
+			return nil, fmt.Errorf("archive time-stamp %d: %w", len(stamps), err)
+		}
+		stamps = append(stamps, ts)
+		// A later ArchiveTimeStamp covers this one too.
+		input = append(input, canonical(prop, nil)...)
+	}
+	return stamps, nil
+}
+
+// archiveTimeStampParts returns the parts of the input of an
+// ArchiveTimeStamp of sig (ETSI EN 319 132-1, 5.5.2.2) on either side of the
+// unsigned properties: the canonical ds:SignedInfo, ds:SignatureValue and
+// ds:KeyInfo, and the ds:Object elements other than the qualifying
+// properties.
+func archiveTimeStampParts(sig *xmlElement) (signature, objects []byte) {
+	for _, local := range []string{"SignedInfo", "SignatureValue", "KeyInfo"} {
+		if e := sig.child(xmldsNamespace, local); e != nil {
+			signature = append(signature, canonical(e, nil)...)
+		}
+	}
+	for _, obj := range sig.children(xmldsNamespace, "Object") {
+		if obj.child(nsXAdES, "QualifyingProperties") == nil {
+			objects = append(objects, canonical(obj, nil)...)
+		}
+	}
+	return signature, objects
 }
 
 // signatureDigest returns the hash of the ds:SignatureMethod of signedInfo.
@@ -269,7 +333,7 @@ func xadesMimeType(name string) string {
 // Every signature must have xades:QualifyingProperties with the prefixes ds
 // and xades, as IIT writes them, and no unsigned properties yet.
 func AddXAdESSignatureTimeStamp(ctx context.Context, doc []byte, tsa *TSAClient) ([]byte, error) {
-	return addXAdESProperties(doc, func(sig, props *xmlElement) (int, string, error) {
+	return addXAdESProperties(doc, func(_ *xmlElement, _ map[string]*xmlElement, sig, props *xmlElement) (int, string, error) {
 		if props.child(nsXAdES, "UnsignedProperties") != nil {
 			return 0, "", errors.New("already has unsigned properties")
 		}
@@ -309,7 +373,7 @@ func AddXAdESSignatureTimeStamp(ctx context.Context, doc []byte, tsa *TSAClient)
 // certificate must be good. With ocsp.URL empty, the certificate is checked
 // at the OCSP server it names.
 func AddXAdESValidationData(ctx context.Context, doc []byte, certs []*x509.Certificate, ocsp *OCSPClient) ([]byte, error) {
-	return addXAdESProperties(doc, func(sig, props *xmlElement) (int, string, error) {
+	return addXAdESProperties(doc, func(_ *xmlElement, _ map[string]*xmlElement, sig, props *xmlElement) (int, string, error) {
 		unsigned := props.child(nsXAdES, "UnsignedProperties").child(nsXAdES, "UnsignedSignatureProperties")
 		if unsigned.child(nsXAdES, "SignatureTimeStamp") == nil {
 			return 0, "", errors.New("no signature time-stamp: add it with AddXAdESSignatureTimeStamp")
@@ -351,11 +415,63 @@ func AddXAdESValidationData(ctx context.Context, doc []byte, certs []*x509.Certi
 	})
 }
 
+// AddXAdESArchiveTimeStamp turns the XAdES-B-LT signatures of doc into
+// XAdES-B-LTA as IIT writes it: for every ds:Signature it asks tsa to stamp
+// the input of ETSI EN 319 132-1, 5.5.2.2 (the referenced data, the
+// canonical ds:SignedInfo, ds:SignatureValue and ds:KeyInfo, the unsigned
+// signature properties so far and the other ds:Object elements), hashed with
+// the hash of the signature method, and appends the token as
+// xadesv141:ArchiveTimeStamp. Called on B-LTA, it adds another
+// ArchiveTimeStamp that covers the earlier ones. tsa.GOST34311 is not used.
+//
+// files holds the data of a detached signature by URI, as for VerifyXAdES;
+// the digests of the references must match it. Every signature must have
+// the validation data AddXAdESValidationData adds.
+func AddXAdESArchiveTimeStamp(ctx context.Context, doc []byte, files map[string][]byte, tsa *TSAClient) ([]byte, error) {
+	return addXAdESProperties(doc, func(root *xmlElement, ids map[string]*xmlElement, sig, props *xmlElement) (int, string, error) {
+		unsigned := props.child(nsXAdES, "UnsignedProperties").child(nsXAdES, "UnsignedSignatureProperties")
+		if unsigned.child(nsXAdES, "CertificateValues") == nil || unsigned.child(nsXAdES, "RevocationValues") == nil {
+			return 0, "", errors.New("no validation data: add it with AddXAdESValidationData")
+		}
+		signedInfo := sig.child(xmldsNamespace, "SignedInfo")
+		alg, err := signatureDigest(signedInfo)
+		if err != nil {
+			return 0, "", err
+		}
+		var input []byte
+		for _, ref := range signedInfo.children(xmldsNamespace, "Reference") {
+			uri := ref.attr("URI")
+			target, err := referencedData(root, ids, sig, ref, files)
+			if err != nil {
+				return 0, "", fmt.Errorf("reference %q: %w", uri, err)
+			}
+			if err := checkDigest(ref.child(xmldsNamespace, "DigestMethod").attr("Algorithm"), ref.child(xmldsNamespace, "DigestValue").text(), target.data); err != nil {
+				return 0, "", fmt.Errorf("reference %q: %w", uri, err)
+			}
+			input = append(input, target.data...)
+		}
+		signature, objects := archiveTimeStampParts(sig)
+		input = append(input, signature...)
+		for _, c := range unsigned.content {
+			if prop, ok := c.(*xmlElement); ok {
+				input = append(input, canonical(prop, nil)...)
+			}
+		}
+		token, _, err := tsa.timeStamp(ctx, alg, append(input, objects...))
+		if err != nil {
+			return 0, "", err
+		}
+		return unsigned.end, `<xadesv141:ArchiveTimeStamp xmlns:xadesv141="` + nsXAdES141 + `"><ds:CanonicalizationMethod Algorithm="` + excC14N +
+			`"/><xades:EncapsulatedTimeStamp>` + base64.StdEncoding.EncodeToString(token) +
+			`</xades:EncapsulatedTimeStamp></xadesv141:ArchiveTimeStamp>`, nil
+	})
+}
+
 // addXAdESProperties inserts into doc, for every ds:Signature with its
 // xades:QualifyingProperties props, the markup that add returns at the
 // offset it returns.
-func addXAdESProperties(doc []byte, add func(sig, props *xmlElement) (int, string, error)) ([]byte, error) {
-	root, _, err := parseXML(doc)
+func addXAdESProperties(doc []byte, add func(root *xmlElement, ids map[string]*xmlElement, sig, props *xmlElement) (int, string, error)) ([]byte, error) {
+	root, ids, err := parseXML(doc)
 	if err != nil {
 		return nil, err
 	}
@@ -376,7 +492,7 @@ func addXAdESProperties(doc []byte, add func(sig, props *xmlElement) (int, strin
 		if sig.prefix != "ds" || props.prefix != "xades" || props.namespace("ds") != xmldsNamespace {
 			return nil, fmt.Errorf("pki: XML signature %d: prefixes other than ds and xades: %w", i, errors.ErrUnsupported)
 		}
-		at, markup, err := add(sig, props)
+		at, markup, err := add(root, ids, sig, props)
 		if err != nil {
 			return nil, fmt.Errorf("pki: XML signature %d: %w", i, err)
 		}

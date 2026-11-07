@@ -74,9 +74,9 @@ type gost28147Params struct {
 	DKE []byte `asn1:"optional"`
 }
 
-// gost28147Decrypter returns the stream that decrypts with key in mode, CFB or
+// gost28147Decrypt decrypts data with key in mode, CFB or
 // gamma, with params: the DKE of params, ДКЕ №1 when they omit it.
-func gost28147Decrypter(mode asn1.ObjectIdentifier, params gost28147Params, key []byte) (cipher.Stream, error) {
+func gost28147Decrypt(mode asn1.ObjectIdentifier, params gost28147Params, key, data []byte) ([]byte, error) {
 	sbox := gost28147.DKE1()
 	if params.DKE != nil {
 		var err error
@@ -91,17 +91,21 @@ func gost28147Decrypter(mode asn1.ObjectIdentifier, params gost28147Params, key 
 	if err != nil {
 		return nil, fmt.Errorf("pki: %w", err)
 	}
+	defer gost28147.Destroy(block)
+	var stream cipher.Stream
 	switch {
 	case mode.Equal(oidGOST28147CFB):
-		return cipher.NewCFBDecrypter(block, params.IV), nil //nolint:staticcheck // SA1019: the mode Ukrainian key files and envelopes use
+		stream = cipher.NewCFBDecrypter(block, params.IV) //nolint:staticcheck // SA1019: the mode Ukrainian key files and envelopes use
 	case mode.Equal(oidGOST28147OFB):
-		stream, err := gost28147.NewCTR(block, params.IV)
-		if err != nil {
+		if stream, err = gost28147.NewCTR(block, params.IV); err != nil {
 			return nil, fmt.Errorf("pki: %w", err)
 		}
-		return stream, nil
+	default:
+		return nil, fmt.Errorf("pki: encryption scheme %v: %w", mode, x509.ErrUnsupportedAlgorithm)
 	}
-	return nil, fmt.Errorf("pki: encryption scheme %v: %w", mode, x509.ErrUnsupportedAlgorithm)
+	plain := make([]byte, len(data))
+	stream.XORKeyStream(plain, data)
+	return plain, nil
 }
 
 type encryptedPrivateKeyInfo struct {
@@ -142,14 +146,14 @@ func decryptPBES2(alg pkix.AlgorithmIdentifier, data []byte, password string) ([
 	if err != nil {
 		return nil, fmt.Errorf("pki: PBKDF2: %w", err)
 	}
-	stream, err := gost28147Decrypter(params.Scheme.Algorithm, params.Scheme.Params, key)
+	plain, err := gost28147Decrypt(params.Scheme.Algorithm, params.Scheme.Params, key, data)
+	clear(key)
 	if err != nil {
 		return nil, err
 	}
-	plain := make([]byte, len(data))
-	stream.XORKeyStream(plain, data)
 	var v asn1.RawValue
 	if unmarshal(plain, &v) != nil || v.Tag != asn1.TagSequence {
+		clear(plain)
 		return nil, ErrIncorrectPassword
 	}
 	return plain, nil
@@ -184,11 +188,13 @@ func EncryptPKCS8PrivateKey(random io.Reader, pkcs8 []byte, password string, ite
 		return nil, fmt.Errorf("pki: PBKDF2: %w", err)
 	}
 	block, err := gost28147.NewCipher(key, gost28147.DKE1())
+	clear(key)
 	if err != nil {
 		return nil, fmt.Errorf("pki: %w", err)
 	}
 	data := make([]byte, len(pkcs8))
 	cipher.NewCFBEncrypter(block, params.Scheme.Params.IV).XORKeyStream(data, pkcs8) //nolint:staticcheck // SA1019: the mode the key files use
+	gost28147.Destroy(block)
 
 	der, err := asn1.Marshal(params)
 	if err != nil {
@@ -259,6 +265,7 @@ func ParsePKCS8KeyAgreementKey(der []byte) (*dstu4145.PrivateKey, error) {
 		d[i] = bits.Reverse8(b)
 	}
 	key, err := dstu4145.NewPrivateKey(curve, d)
+	clear(d)
 	if err != nil {
 		return nil, fmt.Errorf("pki: key agreement key: %w", err)
 	}
@@ -436,13 +443,14 @@ func pfxMACKey(password string, salt []byte, iterations int) []byte {
 }
 
 // EncodePFX writes p as a PKCS#12 file that DecodePFX and cryptonite read:
-// each key in PKCS#8 as IIT writes it (dstu4145le with the OID of the curve
-// and ДКЕ №1, d little-endian), encrypted by EncryptPKCS8PrivateKey, the
-// certificates in the clear, and a MAC on HMAC GOST 34.311 over a 32-byte
-// salt. Like IIT, it marks each key and the certificate of a key with
-// localKeyID, the SKI of the key; friendlyName is not written. Key derivation and the MAC take iterations rounds; IIT uses 10000.
-// Keys must lie on named curves. To change the password of a PFX, decode it
-// with the old password and encode it with the new one.
+// each key in PKCS#8 as IIT writes it (dstu4145le with the explicit
+// parameters of the curve and ДКЕ №1, d little-endian), encrypted by
+// EncryptPKCS8PrivateKey, the certificates in the clear, and a MAC on HMAC
+// GOST 34.311 over a 32-byte salt. Like IIT, it marks each key and the
+// certificate of a key with localKeyID, the SKI of the key; friendlyName is
+// not written. Key derivation and the MAC take iterations rounds; IIT uses
+// 10000. To change the password of a PFX, decode it with the old password
+// and encode it with the new one.
 func EncodePFX(random io.Reader, p *PFX, password string, iterations int) ([]byte, error) {
 	if iterations < 1 || iterations > maxIterations {
 		return nil, fmt.Errorf("pki: PFX with %d iterations", iterations)
@@ -479,6 +487,7 @@ func EncodePFX(random io.Reader, p *PFX, password string, iterations int) ([]byt
 			return nil, err
 		}
 		encrypted, err := EncryptPKCS8PrivateKey(random, pkcs8, password, iterations)
+		clear(pkcs8)
 		if err != nil {
 			return nil, err
 		}
@@ -533,22 +542,23 @@ func EncodePFX(random io.Reader, p *PFX, password string, iterations int) ([]byt
 	return asn1.Marshal(pfx)
 }
 
-// marshalIITPrivateKey returns key in PKCS#8 as IIT and cryptonite write it:
-// dstu4145le with DSTU4145Params of the curve OID and ДКЕ №1, and d itself
-// little-endian.
+// marshalIITPrivateKey returns key in PKCS#8 as IIT writes it: dstu4145le
+// with DSTU4145Params of the explicit curve parameters and ДКЕ №1, and d
+// itself little-endian.
 func marshalIITPrivateKey(key *dstu4145.PrivateKey) ([]byte, error) {
-	oid, err := curveOID(key.Public().Curve())
+	curve, err := marshalCurve(key.Public().Curve())
 	if err != nil {
 		return nil, err
 	}
 	params, err := asn1.Marshal(struct {
-		Curve asn1.ObjectIdentifier
+		Curve asn1.RawValue
 		DKE   []byte
-	}{oid, gost28147.PackDKE(gost28147.DKE1())})
+	}{asn1.RawValue{FullBytes: curve}, gost28147.PackDKE(gost28147.DKE1())})
 	if err != nil {
 		return nil, fmt.Errorf("pki: DSTU 4145 parameters: %w", err)
 	}
 	d := key.Bytes()
+	defer clear(d)
 	slices.Reverse(d)
 	return asn1.Marshal(struct {
 		Version    int

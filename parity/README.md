@@ -16,8 +16,9 @@ make
 
 | Файл | Що робить |
 |---|---|
-| [`main.go`](main.go) | `gen` — випадки від uacrypto; `verify` — перевірка чужих підписів; `cms` — звірка CMS; `tsa` — CAdES-T зі справжнім TSA; `czo` — корпус ЦЗО; `envelope-gen`, `envelope-check` — конверти ([`envelope.go`](envelope.go)) |
+| [`main.go`](main.go) | `gen` — випадки від uacrypto; `verify` — перевірка чужих підписів; `cms` — звірка CMS; `tsa` — CAdES-T зі справжнім TSA; `czo` — корпус ЦЗО; `envelope-gen`, `envelope-check` — конверти ([`envelope.go`](envelope.go)); `crl-gen`, `crl-check` — CRL ([`crl.go`](crl.go)) |
 | [`java/Check.java`](java/Check.java) | Bouncy Castle 1.86 |
+| [`java/CRL.java`](java/CRL.java) | CRL через JCA-провайдер Bouncy Castle 1.86 в обидва боки: `X509CRL.verify` CRL uacrypto, номер, дельта-індикатор і записи; той самий CRL від BC (`V2TBSCertListGenerator`, `GOST3411WITHDSTU4145LE`) для `pki.ParseRevocationList` |
 | [`jkurwa/envelope.mjs`](jkurwa/envelope.mjs) | конверти CMS EnvelopedData у обидва боки з `jkurwa` |
 | [`jkurwa/check.mjs`](jkurwa/check.mjs) | [`jkurwa`](https://github.com/dstucrypt/jkurwa) 1.22.9 (ДСТУ 4145) і [`gost89`](https://github.com/dstucrypt/gost89) 0.1.12 (ГОСТ 34.311, ГОСТ 28147: блок, CFB, імітовставка 32 і 64 біти) |
 | [`rust/src/main.rs`](rust/src/main.rs) | `ua-cryptography-*` (зокрема `dstu7624` для Калини і `pki` для CMS), RustCrypto `kupyna`, `structured-dstu4145` |

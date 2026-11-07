@@ -123,6 +123,19 @@ func CurveFromParams(p CurveParams) (*Curve, error) {
 	return nil, fmt.Errorf("dstu4145: the curve over GF(2^%d) is not one of the named curves", p.M)
 }
 
+// Params returns the parameters of c, the inverse of CurveFromParams: the
+// middle exponents ascending and G in the compressed encoding.
+func (c *Curve) Params() CurveParams {
+	return CurveParams{
+		M: c.f.m,
+		K: slices.Clone(c.f.ks),
+		A: int(c.a & 1), // a is 0 or 1
+		B: c.b.big(),
+		N: new(big.Int).Set(c.n),
+		G: (&PublicKey{curve: c, q: c.g}).Bytes(),
+	}
+}
+
 // Order returns a copy of n, the order of the curve base point.
 func (c *Curve) Order() *big.Int { return new(big.Int).Set(c.n) }
 

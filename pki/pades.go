@@ -7,11 +7,13 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/asn1"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"maps"
+	"math/bits"
 	"slices"
 	"strconv"
 	"strings"
@@ -26,7 +28,8 @@ const (
 	maxPDFXrefSections = 1024    // revisions in the /Prev chain
 	maxPDFFieldDepth   = 32      // nesting of form fields through /Kids
 	maxPDFRefChain     = 16      // an indirect object that names another
-	maxPDFStream       = 1 << 24 // a decoded stream of the DSS
+	maxPDFStream       = 1 << 24 // a decoded stream
+	maxPDFObjects      = 8388607 // objects in a document, the limit of ISO 32000-1, Annex C
 )
 
 // padesContentsSize is the space SignPAdES reserves for the CMS in /Contents,
@@ -78,10 +81,9 @@ type PDFSignature struct {
 // CAdES signer without validation data of its own, so a DSS must hold the
 // path of each such signer to a root; CRLs of the DSS are not read.
 //
-// VerifyPAdES reads PDFs with cross-reference tables, the form signing tools
-// append; a revision with a cross-reference stream, and objects only an
-// object stream holds, are errors.ErrUnsupported, as are filters other than
-// FlateDecode in the DSS. A signature that does not verify is
+// VerifyPAdES reads PDFs with cross-reference tables, cross-reference streams
+// or both (hybrid files), and objects in object streams; filters other than
+// FlateDecode, and predictors other than PNG, are errors.ErrUnsupported. A signature that does not verify is
 // ErrInvalidSignature; a document without signatures is an error.
 func VerifyPAdES(pdf []byte, certs []*x509.Certificate) ([]PDFSignature, error) {
 	f, err := parsePDF(pdf)
@@ -118,7 +120,11 @@ func VerifyPAdES(pdf []byte, certs []*x509.Certificate) ([]PDFSignature, error) 
 // verifySignature verifies the signature dictionary ref.
 func (f *pdfFile) verifySignature(ref pdfRef, pool []*x509.Certificate, dss longTermData) (PDFSignature, error) {
 	var sig PDFSignature
-	off, ok := f.xref[ref.num]
+	e, ok := f.xref[ref.num]
+	if e.stream != 0 {
+		return sig, errors.New("the signature dictionary is in an object stream, outside the bytes a byte range names")
+	}
+	off := e.offset
 	if !ok || off < 0 {
 		return sig, errors.New("no such object")
 	}
@@ -405,12 +411,177 @@ func (f *pdfFile) streams(v any) ([][]byte, error) {
 // hashes with opts. opts.Detached is ignored. When tsa is not nil, the
 // signature value is time-stamped as by AddSignatureTimeStamp: PAdES-B-T.
 // random, normally crypto/rand.Reader, provides the per-signature secret.
+// AddPAdESValidationData and AddPAdESDocumentTimeStamp go on to B-LT and
+// B-LTA.
 //
 // SignPAdES appends a cross-reference table, so the last revision of pdf
 // must end with one: a cross-reference stream there is
 // errors.ErrUnsupported, as is an encrypted document. It fails if key does
 // not belong to cert or the signature does not fit in /Contents.
 func SignPAdES(ctx context.Context, random io.Reader, pdf []byte, key *dstu4145.PrivateKey, cert *x509.Certificate, opts SignOptions, tsa *TSAClient) ([]byte, error) {
+	u, err := newPDFUpdate(pdf)
+	if err != nil {
+		return nil, err
+	}
+	return u.appendSignature("Sig", "ETSI.CAdES.detached", func(signed []byte) ([]byte, error) {
+		sd, err := signContent(random, oidData, signed, key, cert, SignOptions{Detached: true, GOST34311: opts.GOST34311}, false)
+		if err != nil {
+			return nil, err
+		}
+		der, err := sd.marshal()
+		if err != nil || tsa == nil {
+			return der, err
+		}
+		return AddSignatureTimeStamp(ctx, der, tsa)
+	})
+}
+
+// AddPAdESDocumentTimeStamp appends to the PDF document pdf a document
+// time-stamp from tsa as an incremental update, as IIT writes PAdES-B-LTA:
+// a signature field as SignPAdES adds it and a dictionary with /Type
+// /DocTimeStamp, /SubFilter /ETSI.RFC3161 and /M now, whose /Contents of
+// 10240 bytes holds the time-stamp token of the byte range. Unlike IIT it
+// also writes /Filter /Adobe.PPKLite, which ISO 32000-1, 12.8.1 requires.
+// Added after AddPAdESValidationData, it makes B-LTA of B-LT. pdf must end
+// with a cross-reference table, as for SignPAdES.
+func AddPAdESDocumentTimeStamp(ctx context.Context, pdf []byte, tsa *TSAClient) ([]byte, error) {
+	u, err := newPDFUpdate(pdf)
+	if err != nil {
+		return nil, err
+	}
+	return u.appendSignature("DocTimeStamp", "ETSI.RFC3161", func(signed []byte) ([]byte, error) {
+		token, _, err := tsa.TimeStamp(ctx, signed)
+		return token, err
+	})
+}
+
+// AddPAdESValidationData turns the PAdES-B-T signatures of the PDF document
+// pdf into B-LT as IIT writes them, with "full CA data": it appends an
+// incremental update with a document security store (/DSS of the catalog,
+// /Certs and /OCSPs, FlateDecode streams, no /VRI). For every signature of
+// the document, verified first as VerifyPAdES does with certs, it builds the
+// path from the signer certificate to a self-signed root and the path of the
+// TSA certificate of its signature time-stamp (of a document time-stamp, the
+// TSA path alone) out of certs and the certificates of the signature, and
+// asks ocsp about every certificate of the paths but the roots. The DSS
+// holds the certificates of the paths but the signers, then the OCSP
+// responder certificates, each once, and the responses in the order asked.
+//
+// Every CAdES signature must have a signature time-stamp, added by passing
+// a TSA to SignPAdES, every certificate asked about must be good, and the
+// document must have no DSS yet. With ocsp.URL empty, each certificate is
+// checked at the OCSP server it names. pdf must end with a cross-reference
+// table, as for SignPAdES.
+func AddPAdESValidationData(ctx context.Context, pdf []byte, certs []*x509.Certificate, ocsp *OCSPClient) ([]byte, error) {
+	u, err := newPDFUpdate(pdf)
+	if err != nil {
+		return nil, err
+	}
+	if u.catalog["DSS"] != nil {
+		return nil, errors.New("pki: the PDF document already has a DSS")
+	}
+	sigs, err := VerifyPAdES(pdf, certs)
+	if err != nil {
+		return nil, err
+	}
+	type certPath struct {
+		certs  []*x509.Certificate
+		signer bool // the first certificate is in the CMS and stays out of the DSS
+	}
+	var paths []certPath
+	for i, sig := range sigs {
+		if sig.Signer.Certificate != nil {
+			path, err := certificatePath(sig.Signer.Certificate, certs)
+			if err != nil {
+				return nil, fmt.Errorf("pki: PDF signature %d: %w", i, err)
+			}
+			paths = append(paths, certPath{path, true})
+		}
+		if sig.Signer.TimeStamp == nil {
+			return nil, fmt.Errorf("pki: PDF signature %d has no signature time-stamp: pass a TSA to SignPAdES", i)
+		}
+		path, err := certificatePath(sig.Signer.TimeStamp.Certificate, certs)
+		if err != nil {
+			return nil, fmt.Errorf("pki: PDF signature %d time-stamp: %w", i, err)
+		}
+		paths = append(paths, certPath{path, false})
+	}
+
+	var stored, responders []*x509.Certificate
+	var responses [][]byte
+	add := func(list []*x509.Certificate, c *x509.Certificate) []*x509.Certificate {
+		if slices.ContainsFunc(stored, c.Equal) || slices.ContainsFunc(list, c.Equal) {
+			return list
+		}
+		return append(list, c)
+	}
+	for _, path := range paths {
+		for j, c := range path.certs {
+			if j > 0 || !path.signer {
+				stored = add(stored, c)
+			}
+		}
+		for j, c := range path.certs[:len(path.certs)-1] {
+			resp, err := ocsp.Check(ctx, c, path.certs[j+1])
+			if err != nil {
+				return nil, err
+			}
+			if err := goodStatus(resp, c); err != nil {
+				return nil, err
+			}
+			responses = append(responses, resp.Raw)
+			responders = add(responders, resp.Certificate)
+		}
+	}
+	stored = append(stored, responders...)
+
+	refs := func(data [][]byte) (pdfArray, error) {
+		var a pdfArray
+		for _, d := range data {
+			var z bytes.Buffer
+			w := zlib.NewWriter(&z)
+			if _, err := w.Write(d); err != nil {
+				return nil, err
+			}
+			if err := w.Close(); err != nil {
+				return nil, err
+			}
+			ref := u.newRef()
+			u.objects[ref] = pdfStream{dict: pdfDict{"Filter": pdfName("FlateDecode")}, raw: z.Bytes()}
+			a = append(a, ref)
+		}
+		return a, nil
+	}
+	raw := make([][]byte, len(stored))
+	for i, c := range stored {
+		raw[i] = c.Raw
+	}
+	dssRef := u.newRef()
+	certRefs, err := refs(raw)
+	if err != nil {
+		return nil, fmt.Errorf("pki: PDF DSS: %w", err)
+	}
+	ocspRefs, err := refs(responses)
+	if err != nil {
+		return nil, fmt.Errorf("pki: PDF DSS: %w", err)
+	}
+	u.objects[dssRef] = pdfDict{"Type": pdfName("DSS"), "Certs": certRefs, "OCSPs": ocspRefs}
+	u.catalog["DSS"] = dssRef
+	return u.write(pdfRef{}, nil), nil
+}
+
+// A pdfUpdate is an incremental update of a PDF document being built: the
+// objects it adds or replaces, the catalog among them.
+type pdfUpdate struct {
+	pdf     []byte
+	f       *pdfFile
+	rootRef pdfRef
+	catalog pdfDict // a copy, written with the update
+	next    int64   // the next free object number
+	objects map[pdfRef]any
+}
+
+func newPDFUpdate(pdf []byte) (*pdfUpdate, error) {
 	f, err := parsePDF(pdf)
 	if err != nil {
 		return nil, err
@@ -430,28 +601,132 @@ func SignPAdES(ctx context.Context, random io.Reader, pdf []byte, key *dstu4145.
 	if err != nil || size < 1 || size > 1<<32 {
 		return nil, errors.New("pki: PDF trailer without /Size")
 	}
+	return &pdfUpdate{pdf: pdf, f: f, rootRef: rootRef, catalog: maps.Clone(catalog), next: size, objects: map[pdfRef]any{}}, nil
+}
 
-	next := size
-	newRef := func() pdfRef {
-		next++
-		return pdfRef{num: next - 1}
+func (u *pdfUpdate) newRef() pdfRef {
+	u.next++
+	return pdfRef{num: u.next - 1}
+}
+
+// write returns the document with the update appended: the objects and the
+// catalog, then the object raw writes as rawRef when raw is not nil, a
+// cross-reference table and a trailer that names the previous one.
+func (u *pdfUpdate) write(rawRef pdfRef, raw func(b *bytes.Buffer)) []byte {
+	u.objects[u.rootRef] = u.catalog
+	var b bytes.Buffer
+	b.Write(u.pdf)
+	if !bytes.HasSuffix(u.pdf, []byte("\n")) && !bytes.HasSuffix(u.pdf, []byte("\r")) {
+		b.WriteByte('\n')
 	}
-	fieldRef, sigRef := newRef(), newRef()
+	offsets := map[pdfRef]int{}
+	for _, ref := range slices.SortedFunc(maps.Keys(u.objects), func(a, b pdfRef) int { return cmp.Compare(a.num, b.num) }) {
+		offsets[ref] = b.Len()
+		fmt.Fprintf(&b, "%d %d obj\n", ref.num, ref.gen)
+		if s, ok := u.objects[ref].(pdfStream); ok {
+			d := maps.Clone(s.dict)
+			d["Length"] = pdfNumber(strconv.Itoa(len(s.raw)))
+			writePDFValue(&b, d)
+			b.WriteString("\nstream\n")
+			b.Write(s.raw)
+			b.WriteString("\nendstream")
+		} else {
+			writePDFValue(&b, u.objects[ref])
+		}
+		b.WriteString("\nendobj\n")
+	}
+	if raw != nil {
+		offsets[rawRef] = b.Len()
+		raw(&b)
+	}
+
+	// The update's cross-reference section takes the form of the document's
+	// last one: a stream after a stream, a table after a table.
+	xrefAt := b.Len()
+	var xrefRef pdfRef
+	if u.f.xrefStream {
+		xrefRef = u.newRef()
+		offsets[xrefRef] = xrefAt
+	}
+	trailer := pdfDict{"Size": pdfNumber(strconv.FormatInt(u.next, 10)), "Root": u.rootRef, "Prev": pdfNumber(strconv.FormatInt(u.f.startxref, 10))}
+	for _, k := range []pdfName{"Info", "ID"} {
+		if v, ok := u.f.trailer[k]; ok {
+			trailer[k] = v
+		}
+	}
+	// subsections of consecutive object numbers
+	refs := slices.SortedFunc(maps.Keys(offsets), func(a, b pdfRef) int { return cmp.Compare(a.num, b.num) })
+	var runs [][]pdfRef
+	for i := 0; i < len(refs); {
+		j := i + 1
+		for j < len(refs) && refs[j].num == refs[j-1].num+1 {
+			j++
+		}
+		runs = append(runs, refs[i:j])
+		i = j
+	}
+
+	if !u.f.xrefStream {
+		b.WriteString("xref\n")
+		for _, run := range runs {
+			fmt.Fprintf(&b, "%d %d\n", run[0].num, len(run))
+			for _, ref := range run {
+				fmt.Fprintf(&b, "%010d %05d n\r\n", offsets[ref], ref.gen)
+			}
+		}
+		b.WriteString("trailer\n")
+		writePDFValue(&b, trailer)
+		fmt.Fprintf(&b, "\nstartxref\n%d\n%%%%EOF\n", xrefAt)
+		return b.Bytes()
+	}
+
+	// ISO 32000-1, 7.5.8: type 1 entries of a type byte, the offset in as
+	// few bytes as the largest one (the stream's own) needs, a 2-byte
+	// generation; uncompressed, as the stream may not be encrypted anyway
+	ow := max(1, (bits.Len64(uint64(xrefAt))+7)/8) //nolint:gosec // G115: a buffer length is not negative
+	var index pdfArray
+	var rows []byte
+	for _, run := range runs {
+		index = append(index, pdfNumber(strconv.FormatInt(run[0].num, 10)), pdfNumber(strconv.Itoa(len(run))))
+		for _, ref := range run {
+			rows = append(rows, 1)
+			rows = binary.BigEndian.AppendUint64(rows, uint64(offsets[ref])) //nolint:gosec // G115: an offset in the buffer is not negative
+			rows = slices.Delete(rows, len(rows)-8, len(rows)-ow)
+			rows = binary.BigEndian.AppendUint16(rows, uint16(ref.gen)) //nolint:gosec // G115: generations are 0 to 65535 (ISO 32000-1, 7.3.10)
+		}
+	}
+	trailer["Type"] = pdfName("XRef")
+	trailer["W"] = pdfArray{pdfNumber("1"), pdfNumber(strconv.Itoa(ow)), pdfNumber("2")}
+	trailer["Index"] = index
+	trailer["Length"] = pdfNumber(strconv.Itoa(len(rows)))
+	fmt.Fprintf(&b, "%d 0 obj\n", xrefRef.num)
+	writePDFValue(&b, trailer)
+	b.WriteString("\nstream\n")
+	b.Write(rows)
+	fmt.Fprintf(&b, "\nendstream\nendobj\nstartxref\n%d\n%%%%EOF\n", xrefAt)
+	return b.Bytes()
+}
+
+// appendSignature adds a signature field to the interactive form whose value
+// is a signature dictionary of type typ ("Sig" or "DocTimeStamp") with
+// subFilter, and returns the document with the update and /Contents filled
+// with what sign returns for the bytes of the byte range.
+func (u *pdfUpdate) appendSignature(typ, subFilter string, sign func(signed []byte) ([]byte, error)) ([]byte, error) {
+	fieldRef, sigRef := u.newRef(), u.newRef()
 	now := pdfDate(time.Now())
 	field := pdfDict{
 		"Type": pdfName("Annot"), "Subtype": pdfName("Widget"), "FT": pdfName("Sig"),
 		"F": pdfNumber("132"), "Rect": pdfArray{pdfNumber("0"), pdfNumber("0"), pdfNumber("0"), pdfNumber("0")},
 		"T": pdfString("Signature" + strconv.FormatInt(fieldRef.num, 10)), "M": now, "V": sigRef,
 	}
-	if page, ok := f.firstPage(catalog); ok {
+	if page, ok := u.f.firstPage(u.catalog); ok {
 		field["P"] = page
 	}
-	objects := map[pdfRef]any{fieldRef: field}
+	u.objects[fieldRef] = field
 
 	// the form: a new one, or the catalog's with the field added
-	catalog = maps.Clone(catalog)
 	addField := func(form pdfDict) (pdfDict, error) {
-		fields, err := f.array(form["Fields"])
+		fields, err := u.f.array(form["Fields"])
 		if err != nil {
 			return nil, fmt.Errorf("pki: PDF /Fields: %w", err)
 		}
@@ -460,90 +735,45 @@ func SignPAdES(ctx context.Context, random io.Reader, pdf []byte, key *dstu4145.
 		form["SigFlags"] = pdfNumber("3")
 		return form, nil
 	}
-	switch form := catalog["AcroForm"].(type) {
+	var err error
+	switch form := u.catalog["AcroForm"].(type) {
 	case nil:
-		formRef := newRef()
-		objects[formRef] = pdfDict{"Fields": pdfArray{fieldRef}, "SigFlags": pdfNumber("3")}
-		catalog["AcroForm"] = formRef
+		formRef := u.newRef()
+		u.objects[formRef] = pdfDict{"Fields": pdfArray{fieldRef}, "SigFlags": pdfNumber("3")}
+		u.catalog["AcroForm"] = formRef
 	case pdfRef:
-		d, err := f.dict(form)
+		d, err := u.f.dict(form)
 		if err != nil {
 			return nil, fmt.Errorf("pki: PDF /AcroForm: %w", err)
 		}
-		if objects[form], err = addField(d); err != nil {
+		if u.objects[form], err = addField(d); err != nil {
 			return nil, err
 		}
 	case pdfDict:
-		if catalog["AcroForm"], err = addField(form); err != nil {
+		if u.catalog["AcroForm"], err = addField(form); err != nil {
 			return nil, err
 		}
 	default:
 		return nil, errors.New("pki: PDF /AcroForm is not a dictionary")
 	}
-	objects[rootRef] = catalog
 
-	var b bytes.Buffer
-	b.Write(pdf)
-	if !bytes.HasSuffix(pdf, []byte("\n")) && !bytes.HasSuffix(pdf, []byte("\r")) {
-		b.WriteByte('\n')
-	}
-	offsets := map[int64]int{}
-	for _, ref := range slices.SortedFunc(maps.Keys(objects), func(a, b pdfRef) int { return cmp.Compare(a.num, b.num) }) {
-		offsets[ref.num] = b.Len()
-		fmt.Fprintf(&b, "%d %d obj\n", ref.num, ref.gen)
-		writePDFValue(&b, objects[ref])
-		b.WriteString("\nendobj\n")
-	}
-	offsets[sigRef.num] = b.Len()
-	fmt.Fprintf(&b, "%d 0 obj\n<</Type /Sig /Filter /Adobe.PPKLite /SubFilter /ETSI.CAdES.detached /M ", sigRef.num)
-	writePDFValue(&b, now)
-	b.WriteString(" /ByteRange ")
-	byteRangeAt := b.Len()
-	b.WriteString(strings.Repeat(" ", 64)) // room for [0 a b c]
-	b.WriteString(" /Contents ")
-	contentsAt := b.Len()
-	b.WriteString("<" + strings.Repeat("0", 2*padesContentsSize) + ">")
-	contentsEnd := b.Len()
-	b.WriteString(">>\nendobj\n")
-
-	xrefAt := b.Len()
-	b.WriteString("xref\n")
-	nums := slices.Sorted(maps.Keys(offsets))
-	for i := 0; i < len(nums); {
-		j := i + 1
-		for j < len(nums) && nums[j] == nums[j-1]+1 {
-			j++
-		}
-		fmt.Fprintf(&b, "%d %d\n", nums[i], j-i)
-		for _, n := range nums[i:j] {
-			fmt.Fprintf(&b, "%010d 00000 n\r\n", offsets[n])
-		}
-		i = j
-	}
-	trailer := pdfDict{"Size": pdfNumber(strconv.FormatInt(next, 10)), "Root": rootRef, "Prev": pdfNumber(strconv.FormatInt(f.startxref, 10))}
-	for _, k := range []pdfName{"Info", "ID"} {
-		if v, ok := f.trailer[k]; ok {
-			trailer[k] = v
-		}
-	}
-	b.WriteString("trailer\n")
-	writePDFValue(&b, trailer)
-	fmt.Fprintf(&b, "\nstartxref\n%d\n%%%%EOF\n", xrefAt)
-
-	out := b.Bytes()
+	var byteRangeAt, contentsAt, contentsEnd int
+	out := u.write(sigRef, func(b *bytes.Buffer) {
+		fmt.Fprintf(b, "%d 0 obj\n<</Type /%s /Filter /Adobe.PPKLite /SubFilter /%s /M ", sigRef.num, typ, subFilter)
+		writePDFValue(b, now)
+		b.WriteString(" /ByteRange ")
+		byteRangeAt = b.Len()
+		b.WriteString(strings.Repeat(" ", 64)) // room for [0 a b c]
+		b.WriteString(" /Contents ")
+		contentsAt = b.Len()
+		b.WriteString("<" + strings.Repeat("0", 2*padesContentsSize) + ">")
+		contentsEnd = b.Len()
+		b.WriteString(">>\nendobj\n")
+	})
 	copy(out[byteRangeAt:], fmt.Sprintf("[0 %d %d %d]", contentsAt, contentsEnd, len(out)-contentsEnd))
-	sd, err := signContent(random, oidData, slices.Concat(out[:contentsAt], out[contentsEnd:]), key, cert, SignOptions{Detached: true, GOST34311: opts.GOST34311}, false)
+	der, err := sign(slices.Concat(out[:contentsAt], out[contentsEnd:]))
 	if err != nil {
 		return nil, err
-	}
-	der, err := sd.marshal()
-	if err != nil {
-		return nil, err
-	}
-	if tsa != nil {
-		if der, err = AddSignatureTimeStamp(ctx, der, tsa); err != nil {
-			return nil, err
-		}
 	}
 	if len(der) > padesContentsSize {
 		return nil, fmt.Errorf("pki: the signature of %d bytes does not fit in /Contents of %d", len(der), padesContentsSize)
@@ -611,17 +841,17 @@ func asNumber(v any) pdfNumber {
 
 // decode returns the data of s, which may be compressed with FlateDecode.
 func (s pdfStream) decode() ([]byte, error) {
-	filter := s.dict["Filter"]
+	filter, parms := s.dict["Filter"], s.dict["DecodeParms"]
 	if a, ok := filter.(pdfArray); ok && len(a) == 1 {
 		filter = a[0]
+	}
+	if a, ok := parms.(pdfArray); ok && len(a) == 1 {
+		parms = a[0]
 	}
 	switch filter {
 	case nil:
 		return s.raw, nil
 	case pdfName("FlateDecode"):
-		if s.dict["DecodeParms"] != nil {
-			return nil, fmt.Errorf("stream /DecodeParms: %w", errors.ErrUnsupported)
-		}
 		r, err := zlib.NewReader(bytes.NewReader(s.raw))
 		if err != nil {
 			return nil, fmt.Errorf("stream: %w", err)
@@ -633,21 +863,125 @@ func (s pdfStream) decode() ([]byte, error) {
 		if len(data) > maxPDFStream {
 			return nil, fmt.Errorf("stream exceeds %d bytes", maxPDFStream)
 		}
-		return data, nil
+		return unpredict(data, parms)
 	default:
 		return nil, fmt.Errorf("stream /Filter %v: %w", filter, errors.ErrUnsupported)
 	}
 }
 
-// pdfFile is a PDF document with its cross-reference tables read.
-type pdfFile struct {
-	data      []byte
-	xref      map[int64]int64 // object number → offset in the newest revision; -1 when free
-	trailer   pdfDict         // of the newest revision
-	startxref int64
+// unpredict undoes the predictor that the FlateDecode parameters parms name
+// (ISO 32000-1, 7.4.4.4): none, or the PNG filters (PNG 1.2, 6), a filter
+// type byte before each row. The TIFF predictor is errors.ErrUnsupported.
+func unpredict(data []byte, parms any) ([]byte, error) {
+	if parms == nil {
+		return data, nil
+	}
+	d, ok := parms.(pdfDict)
+	if !ok {
+		return nil, fmt.Errorf("stream /DecodeParms: %w", errors.ErrUnsupported)
+	}
+	param := func(k pdfName, def int64) int64 {
+		v, ok := d[k]
+		if !ok {
+			return def
+		}
+		n, err := strconv.ParseInt(string(asNumber(v)), 10, 64)
+		if err != nil || n < 0 || n > maxPDFStream {
+			return -1
+		}
+		return n
+	}
+	predictor, colors, bpc, columns := param("Predictor", 1), param("Colors", 1), param("BitsPerComponent", 8), param("Columns", 1)
+	switch {
+	case predictor == 1:
+		return data, nil
+	case predictor < 10 || predictor > 15:
+		return nil, fmt.Errorf("stream /Predictor %d: %w", predictor, errors.ErrUnsupported)
+	case colors < 1 || colors > 32 || !slices.Contains([]int64{1, 2, 4, 8, 16}, bpc) || columns < 1:
+		return nil, errors.New("stream /DecodeParms out of range")
+	}
+	bpp := int(max(1, colors*bpc/8))
+	rowLen := int((colors*bpc*columns + 7) / 8)
+	if len(data)%(rowLen+1) != 0 {
+		return nil, fmt.Errorf("stream of %d bytes is not rows of %d", len(data), rowLen+1)
+	}
+	out := make([]byte, 0, len(data)/(rowLen+1)*rowLen)
+	prev := make([]byte, rowLen)
+	for row := range slices.Chunk(data, rowLen+1) {
+		out = append(out, row[1:]...)
+		line := out[len(out)-rowLen:]
+		for i := range line {
+			var a, c byte // left and upper left, zero in the first pixel
+			if i >= bpp {
+				a, c = line[i-bpp], prev[i-bpp]
+			}
+			b := prev[i]
+			switch row[0] {
+			case 0:
+			case 1:
+				line[i] += a
+			case 2:
+				line[i] += b
+			case 3:
+				line[i] += a>>1 + b>>1 + a&b&1 // ⌊(a+b)/2⌋ without overflow
+			case 4:
+				line[i] += paeth(a, b, c)
+			default:
+				return nil, fmt.Errorf("stream row of PNG filter type %d", row[0])
+			}
+		}
+		prev = line
+	}
+	return out, nil
 }
 
-// parsePDF reads the cross-reference tables of data, from the last
+// paeth is the Paeth predictor of PNG 1.2, 6.6: of the left, upper and upper
+// left bytes, the one nearest to left + upper - upper left.
+func paeth(a, b, c byte) byte {
+	p := int(a) + int(b) - int(c)
+	pa, pb, pc := abs(p-int(a)), abs(p-int(b)), abs(p-int(c))
+	switch {
+	case pa <= pb && pa <= pc:
+		return a
+	case pb <= pc:
+		return b
+	default:
+		return c
+	}
+}
+
+func abs(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
+
+// pdfFile is a PDF document with its cross-reference sections read.
+type pdfFile struct {
+	data       []byte
+	xref       map[int64]pdfXref // object number → entry of the newest revision
+	trailer    pdfDict           // of the newest revision; the dictionary of a cross-reference stream
+	startxref  int64
+	xrefStream bool                 // the newest section is a cross-reference stream
+	objStms    map[int64]*pdfObjStm // object streams decoded so far
+	decoding   map[int64]bool       // object streams being decoded, against a /Length cycle
+}
+
+// A pdfXref is a cross-reference entry (ISO 32000-1, 7.5.4 and 7.5.8.3):
+// the object is at offset in the file or, when stream is not 0, the
+// index-th object of object stream stream. It is free when offset is -1.
+type pdfXref struct{ offset, stream, index int64 }
+
+// A pdfObjStm is a decoded object stream (ISO 32000-1, 7.5.7): the objects
+// from /First on and, from the header, their numbers and offsets there.
+type pdfObjStm struct {
+	data    []byte
+	nums    []int64
+	offsets []int64
+}
+
+// parsePDF reads the cross-reference sections of data, from the last
 // startxref back through /Prev.
 func parsePDF(data []byte) (*pdfFile, error) {
 	i := bytes.LastIndex(data, []byte("startxref"))
@@ -659,19 +993,24 @@ func parsePDF(data []byte) (*pdfFile, error) {
 	if err != nil {
 		return nil, fmt.Errorf("pki: PDF startxref: %w", err)
 	}
-	f := &pdfFile{data: data, xref: map[int64]int64{}, startxref: off}
+	f := &pdfFile{data: data, xref: map[int64]pdfXref{}, startxref: off, objStms: map[int64]*pdfObjStm{}, decoding: map[int64]bool{}}
 	seen := map[int64]bool{}
 	for range maxPDFXrefSections {
 		if seen[off] || off >= int64(len(data)) {
 			return nil, fmt.Errorf("pki: PDF cross-reference table at %d", off)
 		}
 		seen[off] = true
-		trailer, err := f.xrefSection(off)
+		entries, trailer, stream, err := f.xrefSection(off)
 		if err != nil {
 			return nil, err
 		}
 		if f.trailer == nil {
-			f.trailer = trailer
+			f.trailer, f.xrefStream = trailer, stream
+		}
+		for num, e := range entries {
+			if _, newer := f.xref[num]; !newer {
+				f.xref[num] = e
+			}
 		}
 		prev, ok := trailer["Prev"]
 		if !ok {
@@ -684,53 +1023,190 @@ func parsePDF(data []byte) (*pdfFile, error) {
 	return nil, fmt.Errorf("pki: PDF has more than %d revisions", maxPDFXrefSections)
 }
 
-// xrefSection reads the cross-reference table at off into f.xref, where
-// newer revisions already read keep their entries, and returns its trailer.
-func (f *pdfFile) xrefSection(off int64) (pdfDict, error) {
+// xrefSection reads the cross-reference section at off, a table or a stream
+// (reported by stream), and returns its entries and its trailer. A table
+// with /XRefStm is a hybrid one (ISO 32000-1, 7.5.8.4): the entries of that
+// stream fill those the table lacks; a free one stays free, as poppler and
+// pdf.js read it.
+func (f *pdfFile) xrefSection(off int64) (entries map[int64]pdfXref, trailer pdfDict, stream bool, err error) {
 	p := &pdfParser{b: f.data, pos: int(off)}
 	if !p.keyword("xref") {
-		return nil, fmt.Errorf("pki: PDF has no cross-reference table at %d (a cross-reference stream?): %w", off, errors.ErrUnsupported)
+		entries, trailer, err := f.xrefStreamAt(off)
+		return entries, trailer, true, err
 	}
+	entries = map[int64]pdfXref{}
 	for !p.keyword("trailer") {
 		start, err := p.integer()
 		if err != nil {
-			return nil, fmt.Errorf("pki: PDF cross-reference table: %w", err)
+			return nil, nil, false, fmt.Errorf("pki: PDF cross-reference table: %w", err)
 		}
 		count, err := p.integer()
 		if err != nil || start > 1<<32 || count > 1<<32 {
-			return nil, fmt.Errorf("pki: PDF cross-reference subsection at %d", p.pos)
+			return nil, nil, false, fmt.Errorf("pki: PDF cross-reference subsection at %d", p.pos)
 		}
 		for num := start; num < start+count; num++ {
 			offset, err := p.integer()
 			if err != nil {
-				return nil, fmt.Errorf("pki: PDF cross-reference entry: %w", err)
+				return nil, nil, false, fmt.Errorf("pki: PDF cross-reference entry: %w", err)
 			}
 			if _, err := p.integer(); err != nil {
-				return nil, fmt.Errorf("pki: PDF cross-reference entry: %w", err)
+				return nil, nil, false, fmt.Errorf("pki: PDF cross-reference entry: %w", err)
 			}
 			p.skipSpace()
 			kind := p.regular()
 			if kind != "n" && kind != "f" {
-				return nil, fmt.Errorf("pki: PDF cross-reference entry of type %q", kind)
+				return nil, nil, false, fmt.Errorf("pki: PDF cross-reference entry of type %q", kind)
 			}
-			if _, newer := f.xref[num]; newer {
+			if _, dup := entries[num]; dup {
 				continue
 			}
 			if kind == "f" {
 				offset = -1
 			}
-			f.xref[num] = offset
+			entries[num] = pdfXref{offset: offset}
 		}
 	}
 	v, err := p.value(0)
 	if err != nil {
-		return nil, fmt.Errorf("pki: PDF trailer: %w", err)
+		return nil, nil, false, fmt.Errorf("pki: PDF trailer: %w", err)
 	}
 	trailer, ok := v.(pdfDict)
 	if !ok {
-		return nil, errors.New("pki: PDF trailer is not a dictionary")
+		return nil, nil, false, errors.New("pki: PDF trailer is not a dictionary")
 	}
-	return trailer, nil
+	if v, ok := trailer["XRefStm"]; ok {
+		at, err := strconv.ParseInt(string(asNumber(v)), 10, 64)
+		if err != nil || at < 0 || at >= int64(len(f.data)) {
+			return nil, nil, false, errors.New("pki: PDF trailer /XRefStm is not an offset")
+		}
+		hidden, _, err := f.xrefStreamAt(at)
+		if err != nil {
+			return nil, nil, false, err
+		}
+		for num, e := range hidden {
+			if _, ok := entries[num]; !ok {
+				entries[num] = e
+			}
+		}
+	}
+	return entries, trailer, false, nil
+}
+
+// xrefStreamAt reads the cross-reference stream at off (ISO 32000-1, 7.5.8)
+// and returns its entries and its dictionary, which is the trailer.
+func (f *pdfFile) xrefStreamAt(off int64) (map[int64]pdfXref, pdfDict, error) {
+	p := &pdfParser{b: f.data, pos: int(off)}
+	num, err := p.integer()
+	if err != nil {
+		return nil, nil, fmt.Errorf("pki: PDF has no cross-reference table or stream at %d", off)
+	}
+	v, _, err := f.objectAt(off, num, false)
+	if err != nil {
+		return nil, nil, fmt.Errorf("pki: PDF cross-reference stream: %w", err)
+	}
+	s, ok := v.(pdfStream)
+	if !ok || s.dict["Type"] != pdfName("XRef") {
+		return nil, nil, fmt.Errorf("pki: PDF has no cross-reference table or stream at %d", off)
+	}
+	data, err := s.decode()
+	if err != nil {
+		return nil, nil, fmt.Errorf("pki: PDF cross-reference %w", err)
+	}
+	integer := func(v any, limit int64) (int64, error) {
+		n, err := strconv.ParseInt(string(asNumber(v)), 10, 64)
+		if err != nil || n < 0 || n > limit {
+			return 0, fmt.Errorf("pki: PDF cross-reference stream: %v is not an integer from 0 to %d", v, limit)
+		}
+		return n, nil
+	}
+	size, err := integer(s.dict["Size"], maxPDFObjects+1)
+	if err != nil {
+		return nil, nil, err
+	}
+	wa, ok := s.dict["W"].(pdfArray)
+	if !ok || len(wa) != 3 {
+		return nil, nil, errors.New("pki: PDF cross-reference stream without /W of three widths")
+	}
+	var w [3]int
+	for i, v := range wa {
+		n, err := integer(v, 8)
+		if err != nil {
+			return nil, nil, err
+		}
+		w[i] = int(n)
+	}
+	width := w[0] + w[1] + w[2]
+	if width == 0 {
+		return nil, nil, errors.New("pki: PDF cross-reference stream with /W [0 0 0]")
+	}
+	index := pdfArray{pdfNumber("0"), pdfNumber(strconv.FormatInt(size, 10))}
+	if v, ok := s.dict["Index"]; ok {
+		if index, ok = v.(pdfArray); !ok || len(index)%2 != 0 {
+			return nil, nil, errors.New("pki: PDF cross-reference stream /Index is not pairs")
+		}
+	}
+	field := func(b []byte) int64 {
+		var n uint64
+		for _, c := range b {
+			n = n<<8 | uint64(c)
+		}
+		return int64(n) // a value past int64 turns negative and is rejected
+	}
+	entries := map[int64]pdfXref{}
+	for pair := range slices.Chunk(index, 2) {
+		start, err := integer(pair[0], size)
+		if err != nil {
+			return nil, nil, err
+		}
+		count, err := integer(pair[1], size-start)
+		if err != nil {
+			return nil, nil, err
+		}
+		for num := start; num < start+count; num++ {
+			if len(data) < width {
+				return nil, nil, errors.New("pki: PDF cross-reference stream ends before its entries")
+			}
+			typ := int64(1)
+			if w[0] > 0 {
+				typ = field(data[:w[0]])
+			}
+			a, b := field(data[w[0]:w[0]+w[1]]), field(data[w[0]+w[1]:width])
+			data = data[width:]
+			if _, dup := entries[num]; dup {
+				continue
+			}
+			e, ok, err := xrefStreamEntry(num, typ, a, b)
+			if err != nil {
+				return nil, nil, err
+			}
+			if ok {
+				entries[num] = e
+			}
+		}
+	}
+	return entries, s.dict, nil
+}
+
+// xrefStreamEntry makes the entry of object num from the fields of a
+// cross-reference stream row (ISO 32000-1, 7.5.8.3, Table 18); it reports
+// false for the types other than 0, 1 and 2, references to the null object.
+func xrefStreamEntry(num, typ, a, b int64) (pdfXref, bool, error) {
+	switch typ {
+	case 0:
+		return pdfXref{offset: -1}, true, nil
+	case 1:
+		if a < 0 {
+			return pdfXref{}, false, fmt.Errorf("pki: PDF cross-reference stream: object %d at %d", num, a)
+		}
+		return pdfXref{offset: a}, true, nil
+	case 2:
+		if a <= 0 || b < 0 {
+			return pdfXref{}, false, fmt.Errorf("pki: PDF cross-reference stream: object %d in object stream %d", num, a)
+		}
+		return pdfXref{stream: a, index: b}, true, nil
+	default:
+		return pdfXref{}, false, nil
+	}
 }
 
 // objectAt parses the indirect object num at offset and returns its value
@@ -762,8 +1238,14 @@ func (f *pdfFile) objectAt(offset, num int64, noStream bool) (any, int, error) {
 		}
 		length := d["Length"]
 		if ref, ok := length.(pdfRef); ok {
-			if off, ok := f.xref[ref.num]; ok && off >= 0 {
-				if length, _, err = f.objectAt(off, ref.num, true); err != nil {
+			if e, ok := f.xref[ref.num]; ok {
+				switch {
+				case e.stream != 0:
+					length, err = f.compressed(ref.num, e)
+				case e.offset >= 0:
+					length, _, err = f.objectAt(e.offset, ref.num, true)
+				}
+				if err != nil {
 					return nil, 0, err
 				}
 			}
@@ -791,16 +1273,91 @@ func (f *pdfFile) resolve(v any) (any, error) {
 		if !ok {
 			return v, nil
 		}
-		off, ok := f.xref[ref.num]
-		if !ok || off < 0 {
-			return nil, fmt.Errorf("object %d %d R is in no cross-reference table (an object stream?): %w", ref.num, ref.gen, errors.ErrUnsupported)
-		}
+		e, ok := f.xref[ref.num]
 		var err error
-		if v, _, err = f.objectAt(off, ref.num, false); err != nil {
+		switch {
+		case e.stream != 0:
+			v, err = f.compressed(ref.num, e)
+		case !ok || e.offset < 0:
+			return nil, fmt.Errorf("object %d %d R is in no cross-reference section", ref.num, ref.gen)
+		default:
+			v, _, err = f.objectAt(e.offset, ref.num, false)
+		}
+		if err != nil {
 			return nil, err
 		}
 	}
 	return nil, errors.New("references nested too deep")
+}
+
+// compressed returns object num, which entry e places in an object stream.
+func (f *pdfFile) compressed(num int64, e pdfXref) (any, error) {
+	s, err := f.objStm(e.stream)
+	if err != nil {
+		return nil, err
+	}
+	if e.index >= int64(len(s.nums)) || s.nums[e.index] != num {
+		return nil, fmt.Errorf("object %d is not object %d of object stream %d", num, e.index, e.stream)
+	}
+	p := &pdfParser{b: s.data, pos: int(s.offsets[e.index])}
+	v, err := p.value(0)
+	if err != nil {
+		return nil, fmt.Errorf("object %d: %w", num, err)
+	}
+	return v, nil
+}
+
+// objStm returns object stream num, decoded once. An object stream is never
+// in another one (ISO 32000-1, 7.5.7); its /Length may be, which decoding
+// bounds.
+func (f *pdfFile) objStm(num int64) (*pdfObjStm, error) {
+	if s, ok := f.objStms[num]; ok {
+		return s, nil
+	}
+	e, ok := f.xref[num]
+	if !ok || e.stream != 0 || e.offset < 0 {
+		return nil, fmt.Errorf("object stream %d is not in the file", num)
+	}
+	if f.decoding[num] || len(f.decoding) >= maxPDFRefChain {
+		return nil, fmt.Errorf("object stream %d: /Length in a cycle of object streams", num)
+	}
+	f.decoding[num] = true
+	defer delete(f.decoding, num)
+	v, _, err := f.objectAt(e.offset, num, false)
+	if err != nil {
+		return nil, err
+	}
+	st, ok := v.(pdfStream)
+	if !ok || st.dict["Type"] != pdfName("ObjStm") {
+		return nil, fmt.Errorf("object %d is not an object stream", num)
+	}
+	data, err := st.decode()
+	if err != nil {
+		return nil, fmt.Errorf("object stream %d: %w", num, err)
+	}
+	n, err := strconv.ParseInt(string(asNumber(st.dict["N"])), 10, 64)
+	if err != nil || n < 0 {
+		return nil, fmt.Errorf("object stream %d: /N", num)
+	}
+	first, err := strconv.ParseInt(string(asNumber(st.dict["First"])), 10, 64)
+	if err != nil || first < 0 || first > int64(len(data)) {
+		return nil, fmt.Errorf("object stream %d: /First", num)
+	}
+	s := &pdfObjStm{data: data[first:]}
+	p := &pdfParser{b: data[:first]}
+	for range n {
+		objNum, err := p.integer()
+		if err != nil {
+			return nil, fmt.Errorf("object stream %d header: %w", num, err)
+		}
+		off, err := p.integer()
+		if err != nil || off >= int64(len(s.data)) {
+			return nil, fmt.Errorf("object stream %d header: offset of object %d", num, objNum)
+		}
+		s.nums, s.offsets = append(s.nums, objNum), append(s.offsets, off)
+	}
+	f.objStms[num] = s
+	return s, nil
 }
 
 // dict resolves v to a dictionary; null is an empty one.

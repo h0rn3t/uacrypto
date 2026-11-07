@@ -36,6 +36,8 @@ import (
 	"io"
 	"math/big"
 	"slices"
+
+	"github.com/h0rn3t/uacrypto/internal/erase"
 )
 
 // A PublicKey is a DSTU 4145 public key Q = -dG on a named curve.
@@ -56,7 +58,7 @@ type PrivateKey struct {
 // GenerateKey returns a new key on curve c with d drawn uniformly from
 // [1, n-1] using random, normally crypto/rand.Reader.
 func GenerateKey(c *Curve, random io.Reader) (k *PrivateKey, err error) {
-	secretDo(func() {
+	erase.Do(func() {
 		var d scalar
 		if d, err = randomScalar(c, random); err == nil {
 			k = newPrivateKey(c, d)
@@ -68,7 +70,7 @@ func GenerateKey(c *Curve, random io.Reader) (k *PrivateKey, err error) {
 // NewPrivateKey returns the key on curve c with the big-endian scalar d,
 // which must be in [1, n-1].
 func NewPrivateKey(c *Curve, d []byte) (k *PrivateKey, err error) {
-	secretDo(func() {
+	erase.Do(func() {
 		s, ok := c.ord.fromBytes(d)
 		if !ok {
 			err = errors.New("dstu4145: private key out of range [1, n-1]")
@@ -171,7 +173,7 @@ func Sign(random io.Reader, k *PrivateKey, hash []byte) (r, s *big.Int, err erro
 	if k.destroyed() {
 		return nil, nil, ErrKeyDestroyed
 	}
-	secretDo(func() { r, s, err = sign(random, k, hash) })
+	erase.Do(func() { r, s, err = sign(random, k, hash) })
 	return r, s, err
 }
 

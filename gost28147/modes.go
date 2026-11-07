@@ -92,6 +92,7 @@ type mac struct {
 }
 
 func (m *mac) Write(p []byte) (int, error) {
+	m.c.live()
 	for _, b := range p {
 		m.state[m.n] ^= b
 		m.n++
@@ -104,6 +105,7 @@ func (m *mac) Write(p []byte) (int, error) {
 }
 
 func (m *mac) Sum(b []byte) []byte {
+	m.c.live()
 	state := m.state
 	if m.n != 0 {
 		m.c.macRounds(&state)

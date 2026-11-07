@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"math/big"
 	"slices"
 	"testing"
@@ -280,4 +281,35 @@ func TestNewCurveRejects(t *testing.T) {
 			t.Errorf("NewCurve(%s) error = nil, want an error", name)
 		}
 	}
+}
+
+func TestDestroy(t *testing.T) {
+	k, err := GenerateKey(mustCurve(t, testParams(t)), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash := []byte("destroy destroy destroy destroy!")
+	r, s, err := Sign(rand.Reader, k, hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	k.Destroy()
+	k.Destroy() // idempotent
+
+	if k.d != (nat{}) {
+		t.Errorf("after Destroy d = %x, want all zero", k.d)
+	}
+	if _, _, err := Sign(rand.Reader, k, hash); !errors.Is(err, ErrKeyDestroyed) {
+		t.Errorf("Sign with a destroyed key error = %v, want %v", err, ErrKeyDestroyed)
+	}
+	if !Verify(k.Public(), hash, r, s) {
+		t.Error("Verify with the public key of a destroyed key = false, want true")
+	}
+	defer func() {
+		if recover() == nil {
+			t.Error("Bytes of a destroyed key did not panic")
+		}
+	}()
+	k.Bytes()
 }

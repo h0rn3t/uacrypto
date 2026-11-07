@@ -78,8 +78,12 @@ func run(args []string, out io.Writer) error {
 		return envelopeGen(args[1])
 	case len(args) == 3 && args[0] == "envelope-check":
 		return envelopeCheck(args[1], args[2], out)
+	case len(args) == 2 && args[0] == "crl-gen":
+		return crlGen(args[1])
+	case len(args) == 3 && args[0] == "crl-check":
+		return crlCheck(args[1], args[2], out)
 	}
-	return errors.New("usage: parity gen | parity verify <signatures.txt> | parity czo <CACertificates.p7b> | parity cms <rust.txt> <go.txt> | parity tsa <URL> <rust_cms.txt> <rust_t.txt> <go.txt> | parity envelope-gen <go_env.txt> | parity envelope-check <go_env.txt> <jkurwa_env.txt>")
+	return errors.New("usage: parity gen | parity verify <signatures.txt> | parity czo <CACertificates.p7b> | parity cms <rust.txt> <go.txt> | parity tsa <URL> <rust_cms.txt> <rust_t.txt> <go.txt> | parity envelope-gen <go_env.txt> | parity envelope-check <go_env.txt> <jkurwa_env.txt> | parity crl-gen <go_crl.txt> | parity crl-check <go_crl.txt> <bc_crl.txt>")
 }
 
 func encode(b []byte) string {

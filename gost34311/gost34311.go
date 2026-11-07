@@ -79,6 +79,7 @@ func (d *digest) Write(p []byte) (int, error) {
 func (d *digest) Sum(b []byte) []byte {
 	final := *d
 	sum := final.checkSum()
+	final = digest{} // the copy holds the buffered input, a password under PBKDF2
 	return append(b, sum[:]...)
 }
 
@@ -95,6 +96,7 @@ func (d *digest) checkSum() [Size]byte {
 	d.compress(&length)
 	sum := d.sum
 	d.compress(&sum)
+	clear(sum[:])
 	return d.h
 }
 
@@ -143,7 +145,13 @@ func (d *digest) compress(m *[32]byte) {
 			panic(err) // the S-box was checked by the constructor and the key is 32 bytes
 		}
 		block.Encrypt(s[8*i:], d.h[8*i:])
+		// The keys come from the message, a password under PBKDF2.
+		gost28147.Destroy(block)
+		clear(key[:])
+		clear(w[:])
 	}
+	clear(u[:])
+	clear(v[:])
 	for range 12 {
 		s = psi(s)
 	}

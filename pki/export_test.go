@@ -27,3 +27,10 @@ var (
 	GOST28147Wrap   = gost28147Wrap
 	GOST28147Unwrap = gost28147Unwrap
 )
+
+// AppendPKCS8Keys lets tests check that the decrypted key is wiped.
+var AppendPKCS8Keys = appendPKCS8Keys
+
+// MarshalIITPrivateKey lets tests compare the PKCS#8 that EncodePFX encrypts
+// with what IIT encrypts.
+var MarshalIITPrivateKey = marshalIITPrivateKey

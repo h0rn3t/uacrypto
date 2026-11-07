@@ -205,3 +205,21 @@ func withJKSDigest(body []byte, password string) []byte {
 	h.Write(body)
 	return h.Sum(bytes.Clone(body))
 }
+
+func TestAppendPKCS8KeysWipes(t *testing.T) {
+	plain := readTestdata(t, "jkurwa-key40a0.der")
+	want, err := pki.ParsePKCS8PrivateKey(plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys, err := pki.AppendPKCS8Keys(nil, plain)
+	if err != nil {
+		t.Fatalf("AppendPKCS8Keys(Key40A0) error = %v", err)
+	}
+	if len(keys) != 1 || !bytes.Equal(keys[0].Bytes(), want.Bytes()) {
+		t.Errorf("AppendPKCS8Keys(Key40A0) = %d keys, want the key of the file", len(keys))
+	}
+	if !bytes.Equal(plain, make([]byte, len(plain))) {
+		t.Error("AppendPKCS8Keys left the PKCS#8 plaintext in place, want it zeroed")
+	}
+}

@@ -16,7 +16,10 @@ import (
 // key and an 8-byte initial state.
 const SeedSize = 40
 
-var errPRNGLooped = errors.New("dstu4145: PRNG returned to its initial state")
+var (
+	errPRNGLooped    = errors.New("dstu4145: PRNG returned to its initial state")
+	errPRNGDestroyed = errors.New("dstu4145: PRNG destroyed")
+)
 
 // A PRNG is the pseudorandom generator the certified cryptonite library
 // requires for DSTU 4145 key generation and signing (PRNG_MODE_DSTU), with
@@ -28,7 +31,7 @@ var errPRNGLooped = errors.New("dstu4145: PRNG returned to its initial state")
 //
 // The time is the Unix time in seconds, as cryptonite takes it outside
 // Windows. A PRNG is an io.Reader for GenerateKey and Sign. It is not safe
-// for concurrent use, and its key schedule is not erased.
+// for concurrent use; Destroy erases its key and state.
 type PRNG struct {
 	block cipher.Block
 	state [8]byte
@@ -55,6 +58,9 @@ func newPRNG(seed []byte, now func() time.Time) *PRNG {
 
 // rekey sets the key and the state and encrypts the current time.
 func (g *PRNG) rekey(key, state []byte) {
+	if g.block != nil {
+		gost28147.Destroy(g.block)
+	}
 	g.block, _ = gost28147.NewCipher(key, gost28147.DKE1()) // a 32-byte key is always accepted
 	copy(g.state[:], state)
 	g.start = g.state
@@ -67,6 +73,9 @@ func (g *PRNG) rekey(key, state []byte) {
 // state || time), h1 becomes the key and the first 8 bytes of h2 the state,
 // and the current time is encrypted anew.
 func (g *PRNG) Seed(data []byte) {
+	if g.block == nil {
+		return // destroyed: Read keeps failing
+	}
 	h := gost34311.New()
 	h.Write(data)
 	h.Write(g.state[:])
@@ -84,9 +93,12 @@ func (g *PRNG) Seed(data []byte) {
 }
 
 // Read fills p with pseudorandom bytes. It fails only if the state returns to
-// its value after seeding, which cryptonite treats as a broken generator; p
-// then holds n good bytes.
+// its value after seeding, which cryptonite treats as a broken generator (p
+// then holds n good bytes), or after Destroy.
 func (g *PRNG) Read(p []byte) (n int, err error) {
+	if g.block == nil {
+		return 0, errPRNGDestroyed
+	}
 	for i := range p {
 		var b byte
 		for bit := range 8 {
@@ -102,4 +114,15 @@ func (g *PRNG) Read(p []byte) (n int, err error) {
 		p[i] = b
 	}
 	return len(p), nil
+}
+
+// Destroy overwrites the key and the state with zeros. Afterwards Read fails
+// and Seed does nothing. Copies the Go runtime made earlier (a moved stack)
+// are beyond its reach.
+func (g *PRNG) Destroy() {
+	if g.block != nil {
+		gost28147.Destroy(g.block)
+		g.block = nil
+	}
+	g.state, g.start, g.t = [8]byte{}, [8]byte{}, [8]byte{}
 }

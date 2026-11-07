@@ -206,3 +206,48 @@ func TestDKE1Appendix(t *testing.T) {
 		}
 	}
 }
+
+func TestDestroy(t *testing.T) {
+	key := bytes.Repeat([]byte{0xa5}, KeySize)
+	block, err := NewCipher(key, DKE1())
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := NewMAC(key, DKE1(), 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.Write([]byte{1, 2, 3}) // a partial block: only the state holds it
+	Destroy(block)
+	Destroy(m)
+	Destroy(block) // a second call is harmless
+
+	if c := block.(*gostCipher); c.key != [8]uint32{} {
+		t.Errorf("Destroy(block): key = %x, want zeros", c.key)
+	}
+	if mc := m.(*mac); mc.c.key != [8]uint32{} || mc.state != [BlockSize]byte{} {
+		t.Errorf("Destroy(mac): key = %x, state = %x, want zeros", mc.c.key, mc.state)
+	}
+
+	buf := make([]byte, BlockSize)
+	for name, use := range map[string]func(){
+		"Encrypt":   func() { block.Encrypt(buf, buf) },
+		"Decrypt":   func() { block.Decrypt(buf, buf) },
+		"NewCTR":    func() { _, _ = NewCTR(block, buf) },
+		"MAC.Write": func() { m.Write([]byte{1}) },
+		"MAC.Sum":   func() { m.Sum(nil) },
+	} {
+		if !panics(use) {
+			t.Errorf("%s after Destroy did not panic", name)
+		}
+	}
+	if !panics(func() { Destroy(cipher.Block(nil)) }) {
+		t.Error("Destroy(nil) did not panic")
+	}
+}
+
+func panics(f func()) (panicked bool) {
+	defer func() { panicked = recover() != nil }()
+	f()
+	return false
+}

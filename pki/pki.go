@@ -175,6 +175,39 @@ func parseCurve(der []byte, littleEndian bool) (*dstu4145.Curve, error) {
 	return curve, nil
 }
 
+// marshalCurve returns the explicit parameters of c, DSTU4145ECBinary, as IIT
+// writes them in its PKCS#8 keys: b and G little-endian, the default version
+// left out. parseCurve reads them back.
+func marshalCurve(c *dstu4145.Curve) ([]byte, error) {
+	p := c.Params()
+	var k any = p.K[0]
+	if len(p.K) == 3 {
+		k = struct{ K1, K2, K3 int }{p.K[0], p.K[1], p.K[2]}
+	}
+	kDER, err := asn1.Marshal(k)
+	if err != nil {
+		return nil, fmt.Errorf("pki: DSTU 4145 field polynomial: %w", err)
+	}
+	b := p.B.FillBytes(make([]byte, (p.M+7)/8))
+	slices.Reverse(b)
+	slices.Reverse(p.G)
+	type field struct {
+		M int
+		K asn1.RawValue
+	}
+	der, err := asn1.Marshal(struct {
+		Field field
+		A     int
+		B     []byte
+		N     *big.Int
+		G     []byte
+	}{field{p.M, asn1.RawValue{FullBytes: kDER}}, p.A, b, p.N, p.G})
+	if err != nil {
+		return nil, fmt.Errorf("pki: DSTU 4145 curve: %w", err)
+	}
+	return der, nil
+}
+
 // CheckSignature checks that signature is a valid signature of signed by k
 // under the signature algorithm alg. The signature is the content of the
 // signature BIT STRING: a DER OCTET STRING holding r||s little-endian for

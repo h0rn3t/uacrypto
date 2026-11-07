@@ -19,6 +19,12 @@
 // formulas in a double-and-add-always loop. Unlike dstu4145 this is not
 // checked by a timing test. Verify, ParsePublicKey, DecompressPublicKey and
 // NewCurve handle public data. The package has not been audited.
+//
+// PrivateKey.Destroy overwrites the private scalar. Copies the Go runtime made
+// earlier (a moved stack, a value copy of the key) are beyond its reach; built
+// with GOEXPERIMENT=runtimesecret, GenerateKey, NewPrivateKey and Sign run
+// under runtime/secret, which erases their registers, stack and temporary
+// allocations on linux/amd64 and linux/arm64.
 package gost3410
 
 import (
@@ -28,7 +34,12 @@ import (
 	"math/big"
 	"math/bits"
 	"slices"
+
+	"github.com/h0rn3t/uacrypto/internal/erase"
 )
+
+// ErrKeyDestroyed is returned by Sign for a key after Destroy.
+var ErrKeyDestroyed = errors.New("gost3410: private key destroyed")
 
 // A PublicKey is a public key Q = dP on a curve.
 type PublicKey struct {
@@ -44,22 +55,28 @@ type PrivateKey struct {
 
 // GenerateKey returns a new key on curve c with d drawn uniformly from
 // [1, q-1] using random, normally crypto/rand.Reader.
-func GenerateKey(c *Curve, random io.Reader) (*PrivateKey, error) {
-	d, err := randomScalar(c, random)
-	if err != nil {
-		return nil, err
-	}
-	return newPrivateKey(c, d), nil
+func GenerateKey(c *Curve, random io.Reader) (k *PrivateKey, err error) {
+	erase.Do(func() {
+		var d nat
+		if d, err = randomScalar(c, random); err == nil {
+			k = newPrivateKey(c, d)
+		}
+	})
+	return k, err
 }
 
 // NewPrivateKey returns the key on curve c with the big-endian scalar d,
 // which must be in [1, q-1].
-func NewPrivateKey(c *Curve, d []byte) (*PrivateKey, error) {
-	k, ok := scalarFromBytes(c, d)
-	if !ok {
-		return nil, errors.New("gost3410: private key out of range [1, q-1]")
-	}
-	return newPrivateKey(c, k), nil
+func NewPrivateKey(c *Curve, d []byte) (k *PrivateKey, err error) {
+	erase.Do(func() {
+		s, ok := scalarFromBytes(c, d)
+		if !ok {
+			err = errors.New("gost3410: private key out of range [1, q-1]")
+			return
+		}
+		k = newPrivateKey(c, s)
+	})
+	return k, err
 }
 
 func newPrivateKey(c *Curve, d nat) *PrivateKey {
@@ -73,11 +90,23 @@ func newPrivateKey(c *Curve, d nat) *PrivateKey {
 func (k *PrivateKey) Public() *PublicKey { return &k.pub }
 
 // Bytes returns d as a big-endian integer padded to the byte length of q,
-// the form NewPrivateKey accepts.
+// the form NewPrivateKey accepts. It panics after Destroy.
 func (k *PrivateKey) Bytes() []byte {
+	if k.destroyed() {
+		panic(ErrKeyDestroyed)
+	}
 	b := k.d.bytesBE()
 	return b[32-(k.pub.curve.q.bits+7)/8:]
 }
+
+// Destroy overwrites the private scalar of k: Sign then returns
+// ErrKeyDestroyed, Bytes panics, and Public still works. It does not reach
+// copies of the key: a PrivateKey copied by value, the bytes Bytes returned,
+// or a key file the key came from.
+func (k *PrivateKey) Destroy() { clear(k.d[:]) }
+
+// destroyed reports whether Destroy was called: a valid d is never zero.
+func (k *PrivateKey) destroyed() bool { return k.d == nat{} }
 
 // Curve returns the curve of k.
 func (k *PublicKey) Curve() *Curve { return k.curve }
@@ -161,6 +190,14 @@ func newPublicKey(c *Curve, x, y *big.Int) (*PublicKey, error) {
 // per-signature secret. The hash is read as a little-endian integer and
 // reduced modulo q, a zero result becoming 1; r and s are in [1, q-1].
 func Sign(random io.Reader, k *PrivateKey, hash []byte) (r, s *big.Int, err error) {
+	if k.destroyed() {
+		return nil, nil, ErrKeyDestroyed
+	}
+	erase.Do(func() { r, s, err = sign(random, k, hash) })
+	return r, s, err
+}
+
+func sign(random io.Reader, k *PrivateKey, hash []byte) (r, s *big.Int, err error) {
 	c := k.pub.curve
 	e := natFromBig(c.hashToScalar(hash))
 	for {

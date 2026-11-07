@@ -83,8 +83,34 @@ var (
 )
 
 type gostCipher struct {
-	key  [8]uint32
-	sbox Sbox
+	key       [8]uint32
+	sbox      Sbox
+	destroyed bool
+}
+
+// Destroy overwrites the key held by v, a cipher.Block from [NewCipher] or a
+// MAC from [NewMAC], and the partial block a MAC holds; v panics on any use
+// afterwards, and so do the modes built over a destroyed block. Copies the Go
+// runtime made earlier (a moved stack) are beyond its reach. Destroy panics if
+// v is anything else.
+func Destroy(v any) {
+	switch v := v.(type) {
+	case *gostCipher:
+		v.key = [8]uint32{}
+		v.destroyed = true
+	case *mac:
+		Destroy(v.c)
+		v.Reset()
+	default:
+		panic(fmt.Sprintf("gost28147: Destroy of %T", v))
+	}
+}
+
+// live panics after Destroy, so that a destroyed key never encrypts as zeros.
+func (c *gostCipher) live() {
+	if c.destroyed {
+		panic("gost28147: use of a destroyed key")
+	}
 }
 
 // NewCipher returns a GOST 28147-89 cipher.Block for a 32-byte key and an
@@ -115,6 +141,7 @@ func (c *gostCipher) Encrypt(dst, src []byte) { c.crypt(dst, src, &encryptOrder)
 func (c *gostCipher) Decrypt(dst, src []byte) { c.crypt(dst, src, &decryptOrder) }
 
 func (c *gostCipher) crypt(dst, src []byte, order *[32]uint8) {
+	c.live()
 	if len(src) < BlockSize || len(dst) < BlockSize {
 		panic("gost28147: input or output not a full block")
 	}

@@ -3,6 +3,8 @@ package dstu4145
 import (
 	"errors"
 	"math/big"
+
+	"github.com/h0rn3t/uacrypto/internal/erase"
 )
 
 // ECDH returns the x coordinate of h·d·Q, the cofactor Diffie–Hellman shared
@@ -20,7 +22,7 @@ func (k *PrivateKey) ECDH(remote *PublicKey) (secret []byte, err error) {
 	if k.destroyed() {
 		return nil, ErrKeyDestroyed
 	}
-	secretDo(func() { secret = k.ecdh(remote) })
+	erase.Do(func() { secret = k.ecdh(remote) })
 	return secret, nil
 }
 

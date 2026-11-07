@@ -339,6 +339,7 @@ func ParsePKCS8PrivateKey(der []byte) (*dstu4145.PrivateKey, error) {
 		d := slices.Clone(pkcs8.PrivateKey) // IIT: d little-endian
 		slices.Reverse(d)
 		key, err := dstu4145.NewPrivateKey(curve, d)
+		clear(d)
 		if err != nil {
 			return nil, fmt.Errorf("pki: %w", err)
 		}

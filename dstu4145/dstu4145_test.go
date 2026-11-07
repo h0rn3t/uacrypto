@@ -367,6 +367,16 @@ func TestCurveFromParams(t *testing.T) {
 	if want := mustCurve(t, 6); got != want {
 		t.Errorf("CurveFromParams(M257) = %p, want NamedCurve(6) %p", got, want)
 	}
+	if p, want := got.Params(), m257(); p.M != want.M || !slices.Equal(p.K, want.K) || p.A != want.A ||
+		p.B.Cmp(want.B) != 0 || p.N.Cmp(want.N) != 0 || !bytes.Equal(p.G, want.G) {
+		t.Errorf("NamedCurve(6).Params() = %+v, want %+v", p, want)
+	}
+	for id := range 10 {
+		c := mustCurve(t, id)
+		if back, err := CurveFromParams(c.Params()); err != nil || back != c {
+			t.Errorf("CurveFromParams(NamedCurve(%d).Params()) = %p, %v, want %p", id, back, err, c)
+		}
+	}
 
 	tests := map[string]func(*CurveParams){
 		"other degree":     func(p *CurveParams) { p.M = 263 },

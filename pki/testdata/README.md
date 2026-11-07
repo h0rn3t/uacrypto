@@ -66,6 +66,7 @@ EncapsulatedContentInfo і набір сертифікатів мають нев
 | `czo-test-pades-bt-kupyna.pdf` | PAdES-B-T (`PAdES/DSTU-7564/PAdES-B-T/Test.pdf`, 2026-11-07) | Купина-256, ДСТУ 4145 |
 | `czo-test-pades-blt-gost.pdf` | PAdES-B-LT, з DSS (`PAdES/DSTU/PAdES-B-LT/Test.pdf`, 2026-11-07) | ГОСТ 34.311, ДСТУ 4145 |
 | `czo-test-pades-blta-kupyna.pdf` | PAdES-B-LTA, з DSS і позначкою часу документа (`PAdES/DSTU-7564/PAdES-B-LTA/Test.pdf`, 2026-11-07) | Купина-256, ДСТУ 4145 |
+| `cairo-xref-stream.pdf` | непідписаний `Test.pdf` ЦЗО (перші 28879 байтів зразків PAdES), перезаписаний `pdftocairo -pdf` (poppler 26.10.0, cairo 1.18.6, 2026-11-08): лише потік перехресних посилань, каталог, дерево сторінок і `/Info` — у потоці об'єктів | — |
 | `czo-test-tsa.der` | сертифікат «TSP-сервер Адміністратора ІТС ЦЗО (CA TEST)» | — |
 | `czo-test-ocsp-ca.der` | сертифікат «OCSP-сервер Адміністратора ІТС ЦЗО (CA TEST)» | — |
 | `czo-test-ocsp-root.der` | сертифікат «OCSP-сервер Центрального засвідчувального органу (ROOT TEST)» | — |

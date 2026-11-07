@@ -25,20 +25,22 @@ func TestVerifyXAdESCZO(t *testing.T) {
 	bundle := []*x509.Certificate{readCert(t, "czo-test-tsa.der"), readCert(t, "czo-test-ocsp-ca.der"), readCert(t, "czo-test-ocsp-root.der")}
 	detached := map[string][]byte{"Test.xml": readTestdata(t, "czo-test-xades-data.xml")}
 	tests := []struct {
-		file       string
-		files      map[string][]byte
-		wantSigned []string
-		wantSigner string
-		wantTime   string
-		wantTS     bool
-		wantChain  int
-		wantOCSP   bool
+		file        string
+		files       map[string][]byte
+		wantSigned  []string
+		wantSigner  string
+		wantTime    string
+		wantTS      bool
+		wantChain   int
+		wantOCSP    bool
+		wantArchive int
 	}{
 		{file: "czo-test-xades-bb-gost.xml", wantSigned: []string{""}, wantSigner: "ТЕСТ Тестовий Тест Тестович", wantTime: "2024-03-04T08:16:53Z"},
 		{file: "czo-test-xades-bt-kupyna-detached.xml", files: detached, wantSigned: []string{"Test.xml"}, wantSigner: "TEST TEST Testov Test",
 			wantTime: "2026-04-27T05:35:57Z", wantTS: true},
 		{file: "czo-test-xades-blt-gost.xml", wantSigned: []string{""}, wantSigner: "ТЕСТ Тестовий Тест Тестович", wantTS: true, wantChain: 3, wantOCSP: true},
-		{file: "czo-test-xades-blta-kupyna.xml", wantSigned: []string{""}, wantSigner: "ТЕСТ Тестовий Тест Тестович", wantTS: true, wantChain: 3, wantOCSP: true},
+		{file: "czo-test-xades-blta-kupyna.xml", wantSigned: []string{""}, wantSigner: "ТЕСТ Тестовий Тест Тестович", wantTS: true, wantChain: 3, wantOCSP: true,
+			wantArchive: 1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.file, func(t *testing.T) {
@@ -70,6 +72,48 @@ func TestVerifyXAdESCZO(t *testing.T) {
 			}
 			if got := len(s.OCSP) > 0 && s.OCSP[0] != nil; got != tt.wantOCSP {
 				t.Errorf("VerifyXAdES(%s) OCSP response about the signer = %v, want %v", tt.file, got, tt.wantOCSP)
+			}
+			if len(s.ArchiveTimeStamps) != tt.wantArchive {
+				t.Fatalf("VerifyXAdES(%s) = %d archive time-stamps, want %d", tt.file, len(s.ArchiveTimeStamps), tt.wantArchive)
+			}
+			for _, ts := range s.ArchiveTimeStamps {
+				if ts.Certificate.Subject.CommonName != tsaName || ts.Time.Before(s.TimeStamp.Time) {
+					t.Errorf("VerifyXAdES(%s) archive time-stamp by %q at %v, want the ЦЗО test TSA after the signature time-stamp %v",
+						tt.file, ts.Certificate.Subject.CommonName, ts.Time, s.TimeStamp.Time)
+				}
+			}
+		})
+	}
+}
+
+// TestVerifyXAdESArchiveTimeStamp changes what the ArchiveTimeStamp of the
+// ЦЗО B-LTA sample covers and nothing else the other checks see.
+func TestVerifyXAdESArchiveTimeStamp(t *testing.T) {
+	bundle := []*x509.Certificate{readCert(t, "czo-test-tsa.der"), readCert(t, "czo-test-ocsp-ca.der"), readCert(t, "czo-test-ocsp-root.der")}
+	doc := readTestdata(t, "czo-test-xades-blta-kupyna.xml")
+	replace := func(old, replacement string) []byte {
+		t.Helper()
+		if !bytes.Contains(doc, []byte(old)) {
+			t.Fatalf("the document has no %q", old)
+		}
+		return bytes.Replace(doc, []byte(old), []byte(replacement), 1)
+	}
+	tests := []struct {
+		name    string
+		doc     []byte
+		wantErr error // nil: any
+	}{
+		{"certificate values changed", replace("<xades:CertificateValues>", "<xades:CertificateValues>\n"), pki.ErrInvalidSignature},
+		{"revocation values changed", replace("<xades:RevocationValues>", "<xades:RevocationValues>\n"), pki.ErrInvalidSignature},
+		{"inclusive canonicalization", replace(`<xadesv141:ArchiveTimeStamp xmlns:xadesv141="http://uri.etsi.org/01903/v1.4.1#"><ds:CanonicalizationMethod Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/>`,
+			`<xadesv141:ArchiveTimeStamp xmlns:xadesv141="http://uri.etsi.org/01903/v1.4.1#"><ds:CanonicalizationMethod Algorithm="http://www.w3.org/TR/2001/REC-xml-c14n-20010315"/>`), errors.ErrUnsupported},
+		{"token missing", regexp.MustCompile(`(<xadesv141:ArchiveTimeStamp[^>]*><ds:CanonicalizationMethod[^>]*/><xades:EncapsulatedTimeStamp>)[^<]*`).ReplaceAll(doc, []byte("${1}")), nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, _, err := pki.VerifyXAdES(tt.doc, nil, bundle)
+			if err == nil || tt.wantErr != nil && !errors.Is(err, tt.wantErr) {
+				t.Errorf("VerifyXAdES(%s) error = %v, want an error matching %v (nil: any)", tt.name, err, tt.wantErr)
 			}
 		})
 	}
@@ -402,4 +446,106 @@ func TestAddXAdESRejects(t *testing.T) {
 			t.Errorf("AddXAdESValidationData(%s) = %d bytes, want error", tt.name, len(got))
 		}
 	}
+}
+
+// The ЦЗО B-LTA example is the layout of the archive time-stamp: the
+// enveloped Kupyna signature with the validation data about the signer.
+func TestAddXAdESArchiveTimeStamp(t *testing.T) {
+	leaf, ca, root, _ := newXAdESPath(t, "")
+	certs := []*x509.Certificate{ca.cert, root.cert}
+	f, tsa := newFakeTSA(t, "")
+	data := readTestdata(t, "czo-test-xades-data.xml")
+	blt := func(t *testing.T, bb []byte) []byte {
+		t.Helper()
+		bt, err := pki.AddXAdESSignatureTimeStamp(t.Context(), bb, tsa)
+		if err != nil {
+			t.Fatal(err)
+		}
+		blt, err := pki.AddXAdESValidationData(t.Context(), bt, certs, &pki.OCSPClient{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return blt
+	}
+
+	t.Run("enveloped", func(t *testing.T) {
+		doc := append([]byte(`<?xml version="1.0" encoding="utf-8" standalone="no" ?>`), data...)
+		bb, err := pki.SignXAdES(rand.Reader, doc, leaf.key, leaf.cert, pki.SignOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		lta, err := pki.AddXAdESArchiveTimeStamp(t.Context(), blt(t, bb), nil, tsa)
+		if err != nil {
+			t.Fatalf("AddXAdESArchiveTimeStamp() error = %v", err)
+		}
+		if !f.imprintAlg.Equal(oidKupyna256) {
+			t.Errorf("AddXAdESArchiveTimeStamp() stamped with %v, want the signature's %v", f.imprintAlg, oidKupyna256)
+		}
+		if got, want := xadesFullLayout(lta), xadesFullLayout(readTestdata(t, "czo-test-xades-blta-kupyna.xml")); got != want {
+			t.Errorf("AddXAdESArchiveTimeStamp() layout =\n%s\nwant (czo-test-xades-blta-kupyna.xml)\n%s", got, want)
+		}
+		// a second archive time-stamp covers the first, as when renewing B-LTA
+		lta2, err := pki.AddXAdESArchiveTimeStamp(t.Context(), lta, nil, tsa)
+		if err != nil {
+			t.Fatalf("AddXAdESArchiveTimeStamp(B-LTA) error = %v", err)
+		}
+		for _, tt := range []struct {
+			name string
+			doc  []byte
+			want int
+		}{{"B-LTA", lta, 1}, {"B-LTA twice", lta2, 2}} {
+			_, signers, err := pki.VerifyXAdES(tt.doc, nil, nil)
+			if err != nil {
+				t.Fatalf("VerifyXAdES(%s) error = %v", tt.name, err)
+			}
+			if got := signers[0].ArchiveTimeStamps; len(got) != tt.want || !got[0].Certificate.Equal(f.signer.cert) {
+				t.Errorf("VerifyXAdES(%s) archive time-stamps = %+v, want %d from the fake TSA", tt.name, got, tt.want)
+			}
+		}
+	})
+
+	t.Run("detached", func(t *testing.T) {
+		bb, err := pki.SignXAdESDetached(rand.Reader, []pki.ASiCFile{{Name: "Test.xml", Data: data}}, leaf.key, leaf.cert, pki.SignOptions{GOST34311: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		files := map[string][]byte{"Test.xml": data}
+		lta, err := pki.AddXAdESArchiveTimeStamp(t.Context(), blt(t, bb), files, tsa)
+		if err != nil {
+			t.Fatalf("AddXAdESArchiveTimeStamp(detached) error = %v", err)
+		}
+		if !f.imprintAlg.Equal(oidGOST34311) {
+			t.Errorf("AddXAdESArchiveTimeStamp(GOST34311) stamped with %v, want %v", f.imprintAlg, oidGOST34311)
+		}
+		if _, signers, err := pki.VerifyXAdES(lta, files, nil); err != nil || len(signers[0].ArchiveTimeStamps) != 1 {
+			t.Errorf("VerifyXAdES(detached B-LTA) = %+v, %v, want one archive time-stamp", signers, err)
+		}
+	})
+
+	t.Run("rejects", func(t *testing.T) {
+		bb, err := pki.SignXAdESDetached(rand.Reader, []pki.ASiCFile{{Name: "Test.xml", Data: data}}, leaf.key, leaf.cert, pki.SignOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		bt, err := pki.AddXAdESSignatureTimeStamp(t.Context(), bb, tsa)
+		if err != nil {
+			t.Fatal(err)
+		}
+		withValues := blt(t, bb)
+		tests := []struct {
+			name  string
+			doc   []byte
+			files map[string][]byte
+		}{
+			{"B-B", bb, map[string][]byte{"Test.xml": data}},
+			{"B-T", bt, map[string][]byte{"Test.xml": data}},
+			{"file missing", withValues, nil},
+			{"file changed", withValues, map[string][]byte{"Test.xml": append(slices.Clone(data), ' ')}},
+		}
+		for _, tt := range tests {
+			if got, err := pki.AddXAdESArchiveTimeStamp(t.Context(), tt.doc, tt.files, tsa); err == nil {
+				t.Errorf("AddXAdESArchiveTimeStamp(%s) = %d bytes, want error", tt.name, len(got))
+			}
+		}
+	})
 }

@@ -43,6 +43,10 @@ type Signer struct {
 	// statuses and times of the responses are for the caller to judge.
 	Chain []*x509.Certificate
 	OCSP  []*OCSPResponse
+	// ArchiveTimeStamps are the verified ArchiveTimeStamp properties of an
+	// XAdES-B-LTA signature in the order of the signature, nil when it has
+	// none. VerifyXAdES alone fills them.
+	ArchiveTimeStamps []*TimeStamp
 }
 
 type attribute struct {

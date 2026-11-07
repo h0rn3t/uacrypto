@@ -23,8 +23,8 @@ JAVA       ?= java
 JAVAC      ?= javac
 BUN        ?= bun
 
-.PHONY: all cms envelope tsa czo iit cryptonite clean
-all: $(OUT)/cases.txt $(OUT)/bc_sigs.txt $(OUT)/rust_sigs.txt $(OUT)/jkurwa_sigs.txt cms envelope
+.PHONY: all cms envelope crl tsa czo iit cryptonite clean
+all: $(OUT)/cases.txt $(OUT)/bc_sigs.txt $(OUT)/rust_sigs.txt $(OUT)/jkurwa_sigs.txt cms envelope crl
 	cat $(OUT)/bc_sigs.txt $(OUT)/rust_sigs.txt $(OUT)/jkurwa_sigs.txt > $(OUT)/foreign_sigs.txt
 	go run . verify $(OUT)/foreign_sigs.txt
 
@@ -63,6 +63,15 @@ envelope: main.go envelope.go jkurwa/envelope.mjs jkurwa/node_modules $(wildcard
 	go run . envelope-gen $(OUT)/go_env.txt
 	$(BUN) jkurwa/envelope.mjs $(OUT)/go_env.txt $(OUT)/jkurwa_env.txt
 	go run . envelope-check $(OUT)/go_env.txt $(OUT)/jkurwa_env.txt
+
+# CRL: Bouncy Castle перевіряє CRL uacrypto (повний, дельта, порожній на трьох кривих) і випускає ті самі тим самим
+# ключем, uacrypto розбирає CRL Bouncy Castle
+crl: main.go crl.go java/CRL.java $(BC_JAR) $(wildcard ../*/*.go)
+	mkdir -p $(OUT)
+	go run . crl-gen $(OUT)/go_crl.txt
+	$(JAVAC) -d $(OUT)/java -cp $(BC_JAR) java/CRL.java
+	$(JAVA) -cp $(BC_JAR):$(OUT)/java CRL $(OUT)/go_crl.txt $(OUT)/bc_crl.txt
+	go run . crl-check $(OUT)/go_crl.txt $(OUT)/bc_crl.txt
 
 $(OUT)/jkurwa_sigs.txt: $(OUT)/cases.txt jkurwa/check.mjs jkurwa/node_modules
 	$(BUN) jkurwa/check.mjs $(OUT)/cases.txt $@

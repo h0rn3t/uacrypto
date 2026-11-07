@@ -90,12 +90,14 @@ func decryptIITStore(params, body []byte, password string) ([]byte, error) {
 		key = gost34311.Sum(key[:])
 	}
 	block, err := gost28147.NewCipher(key[:], gost28147.DKE1())
+	clear(key[:])
 	if err != nil {
 		return nil, fmt.Errorf("pki: %w", err)
 	}
 	for i := 0; i < len(ciphertext); i += gost28147.BlockSize {
 		block.Decrypt(ciphertext[i:], ciphertext[i:])
 	}
+	gost28147.Destroy(block)
 	pkcs8 := ciphertext[:len(body)]
 	if unmarshal(pkcs8, new(asn1.RawValue)) != nil {
 		return nil, ErrIncorrectPassword
@@ -231,6 +233,7 @@ func jksUnprotect(der, pw []byte) ([]byte, error) {
 	}
 	sum := sha1.Sum(append(bytes.Clone(pw), key...)) //nolint:gosec // G401: the JKS key protector is SHA-1
 	if subtle.ConstantTimeCompare(sum[:], check) != 1 {
+		clear(key)
 		return nil, ErrIncorrectPassword
 	}
 	return key, nil
@@ -277,8 +280,10 @@ func jksBytes(r *bytes.Reader, lenSize int) ([]byte, error) {
 }
 
 // appendPKCS8Keys appends to keys the key of a PKCS#8 key and the key
-// agreement key IIT may keep in its attributes.
+// agreement key IIT may keep in its attributes. It overwrites pkcs8, the
+// plaintext a key file decrypted to, with zeros.
 func appendPKCS8Keys(keys []*dstu4145.PrivateKey, pkcs8 []byte) ([]*dstu4145.PrivateKey, error) {
+	defer clear(pkcs8)
 	key, err := ParsePKCS8PrivateKey(pkcs8)
 	if err != nil {
 		return nil, err

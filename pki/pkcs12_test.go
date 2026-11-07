@@ -196,6 +196,45 @@ func TestDecodePFXIIT(t *testing.T) {
 	}
 }
 
+// TestMarshalIITPrivateKey checks the PKCS#8 that EncodePFX encrypts against
+// the two keys IIT encrypted in iit-123456.pfx: the curve in explicit
+// parameters, b and G little-endian, ДКЕ №1, d little-endian, no attributes.
+func TestMarshalIITPrivateKey(t *testing.T) {
+	pfx, err := pki.DecodePFX(readTestdata(t, "iit-123456.pfx"), "123456")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const dke1 = "a9d6eb45f13c708280c4967b231f5eadf658eba4c037291d38d96bf025ca4e17" +
+		"f8e9720dc615b43a28975f0bc1dea36438b564ea2c179fd0123e6db8fac57904"
+	// The plaintext of the two shrouded key bags of iit-123456.pfx: the DER
+	// of DecryptPKCS8PrivateKey, written out with openssl asn1parse.
+	want := []string{
+		"3081f1020100" + "3081c9060b2a86240201010101030101" + "3081b9" +
+			"3075" + "30070202010102010c" + "020100" +
+			"042110bee3db6aea9e1f86578c45c12594ff942394a7d738f9187e6515017294f4ce01" +
+			"0221" + "00800000000000000000000000000000006759213af182e987d3e17714907d470d" +
+			"0421b60fd2d8dce8a93423c6101bca91c47a007e6c300b26cd556c9b0e7d20ef292a00" +
+			"0440" + dke1 +
+			"04204274f69811b61a76c5a0a8454d30c433312742b5c1826aa9d3ee65d03074984e",
+		"30820151020100" + "30820112060b2a86240201010101030101" + "30820101" +
+			"3081bc" + "300f" + "020201af" + "3009020101020103020105" + "020101" +
+			"0436f3ca40c669a4da173149ca12c32dae186b53ac6bc6365997deaeae8ad2d888f9bfd53401694ef9c4273d8cfe6dc28f706a0f4910ce03" +
+			"0236" + "3fffffffffffffffffffffffffffffffffffffffffffffffffffffba3175458009a8c0a724f02f81aa8a1fcbaf80d90c7a95110504cf" +
+			"04367c857c94c5433bfd991e17c22684065850a9a249ed7bc249ae5a4e878689f872ef7ad524082ec3038e9aede7ba6ba13381d979ba621a" +
+			"0440" + dke1 +
+			"0436adc503606c5a88dca11b7095624a79b9194e3b3c96d55945e55542c94269cfb06338e1df4680fd0c75a54c1c39790e608ea49c6de91c",
+	}
+	for i, key := range pfx.Keys {
+		got, err := pki.MarshalIITPrivateKey(key)
+		if err != nil {
+			t.Fatalf("MarshalIITPrivateKey(key %d of iit-123456.pfx) error = %v", i, err)
+		}
+		if w := mustHex(t, want[i]); !bytes.Equal(got, w) {
+			t.Errorf("MarshalIITPrivateKey(key %d of iit-123456.pfx) =\n%x\nwant IIT's\n%x", i, got, w)
+		}
+	}
+}
+
 func TestEncodePFX(t *testing.T) {
 	key, other := newKey(t), newKey(t)
 	template := rootTemplate()

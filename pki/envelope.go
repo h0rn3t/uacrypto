@@ -100,6 +100,7 @@ func EncryptEnvelopedData(random io.Reader, content []byte, key *dstu4145.Privat
 		return nil, errors.New("pki: the key does not belong to the sender certificate")
 	}
 	cek := make([]byte, gost28147.KeySize)
+	defer clear(cek)
 	params := gost28147Params{IV: make([]byte, gost28147.BlockSize), DKE: gost28147.PackDKE(sender.DKE)}
 	if _, err := io.ReadFull(random, cek); err != nil {
 		return nil, fmt.Errorf("pki: content key: %w", err)
@@ -124,6 +125,7 @@ func EncryptEnvelopedData(random io.Reader, content []byte, key *dstu4145.Privat
 	}
 	encrypted := make([]byte, len(content))
 	cipher.NewCFBEncrypter(block, params.IV).XORKeyStream(encrypted, content) //nolint:staticcheck // SA1019: the mode of Ukrainian envelopes
+	gost28147.Destroy(block)
 	der, err := asn1.Marshal(params)
 	if err != nil {
 		return nil, fmt.Errorf("pki: GOST 28147-89 parameters: %w", err)
@@ -186,6 +188,7 @@ func keyAgreeRecipient(random io.Reader, key *dstu4145.PrivateKey, cert, recipie
 		return asn1.RawValue{}, err
 	}
 	wrapped, err := gost28147Wrap(kek, cek, wrapIVRandom, pub.DKE)
+	clear(kek)
 	if err != nil {
 		return asn1.RawValue{}, err
 	}
@@ -287,9 +290,11 @@ func DecryptEnvelopedData(der []byte, key *dstu4145.PrivateKey, cert *x509.Certi
 		return nil, err
 	}
 	cek, err := gost28147Unwrap(kek, wrapped, recipient.DKE)
+	clear(kek)
 	if err != nil {
 		return nil, err
 	}
+	defer clear(cek)
 
 	eci := ed.EncryptedContentInfo
 	if eci.EncryptedContent.FullBytes == nil {
@@ -310,13 +315,7 @@ func DecryptEnvelopedData(der []byte, key *dstu4145.PrivateKey, cert *x509.Certi
 	if err := unmarshal(eci.Algorithm.Parameters.FullBytes, &params); err != nil {
 		return nil, fmt.Errorf("pki: GOST 28147-89 parameters: %w", err)
 	}
-	stream, err := gost28147Decrypter(eci.Algorithm.Algorithm, params, cek)
-	if err != nil {
-		return nil, err
-	}
-	content := make([]byte, len(encrypted))
-	stream.XORKeyStream(content, encrypted)
-	return content, nil
+	return gost28147Decrypt(eci.Algorithm.Algorithm, params, cek, encrypted)
 }
 
 // findKeyAgreeRecipient returns the KeyAgreeRecipientInfo of infos with a
@@ -426,10 +425,12 @@ func gost28147Wrap(kek, cek, iv []byte, sbox gost28147.Sbox) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("pki: %w", err)
 	}
+	defer gost28147.Destroy(block)
 	mac, err := gost28147.NewMAC(kek, sbox, 4)
 	if err != nil {
 		return nil, fmt.Errorf("pki: %w", err)
 	}
+	defer gost28147.Destroy(mac)
 	mac.Write(cek)
 	w := slices.Concat(iv, cek, mac.Sum(nil))
 	cipher.NewCFBEncrypter(block, iv).XORKeyStream(w[len(iv):], w[len(iv):]) //nolint:staticcheck // SA1019: GOST28147Wrap is built on CFB
@@ -447,6 +448,7 @@ func gost28147Unwrap(kek, wrapped []byte, sbox gost28147.Sbox) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("pki: %w", err)
 	}
+	defer gost28147.Destroy(block)
 	w := make([]byte, len(wrapped))
 	cipher.NewCFBDecrypter(block, wrapIV).XORKeyStream(w, wrapped) //nolint:staticcheck // SA1019: GOST28147Wrap is built on CFB
 	slices.Reverse(w)
@@ -457,6 +459,7 @@ func gost28147Unwrap(kek, wrapped []byte, sbox gost28147.Sbox) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("pki: %w", err)
 	}
+	defer gost28147.Destroy(mac)
 	mac.Write(cek)
 	if subtle.ConstantTimeCompare(mac.Sum(nil), sum) != 1 {
 		return nil, errors.New("pki: the wrapped key does not match its MAC")
