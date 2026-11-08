@@ -34,10 +34,17 @@ function verify(pub, hash, sig) {
 const out = [];
 let skipped = 0;
 let macOneBlock = 0;
+let emptyGost = 0;
 for (const line of readFileSync(process.argv[2], "utf8").split("\n")) {
   const f = line.split(" ");
   switch (f[0]) {
     case "H":
+      // gost89 hashes no padding block for the empty
+      // message; uacrypto, cryptonite and UAPKI hash a zero block.
+      if (f[1] === "-") {
+        emptyGost++;
+        break;
+      }
       check("gost34311", str(gost89.gosthash(hex(f[1]))) === f[2], line.slice(0, 60));
       break;
     case "C": {
@@ -99,4 +106,5 @@ for (const [what, [ok, bad]] of [...stats].sort()) {
 }
 console.log(`jkurwa   skipped ${skipped} signature cases: curve not in jkurwa or zero hash`);
 console.log(`jkurwa   skipped ${macOneBlock} one-block MAC cases: gost89 appends a zero block`);
+console.log(`jkurwa   skipped ${emptyGost} empty-message GOST 34.311 cases: gost89 hashes no padding block`);
 process.exit(failed ? 1 : 0);

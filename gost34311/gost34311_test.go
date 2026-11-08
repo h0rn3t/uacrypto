@@ -18,14 +18,16 @@ func sequence(n int) []byte {
 	return b
 }
 
-// Vectors come from GOST3411Digest of Bouncy Castle 1.86 with the expanded ДКЕ №1;
-// "" and "abc" also match the hashes the IIT library accepted from test-ca.
+// Vectors come from GOST3411Digest of Bouncy Castle 1.86 with the expanded ДКЕ №1,
+// except the empty message: the final stage of the standard hashes the padding
+// block even when it is all zeros, which Bouncy Castle skips; that vector is the
+// one the certified UAPKI (uapkic, parity/uapki) and crypto-dstu compute.
 var vectors = []struct {
 	name string
 	in   []byte
 	want string
 }{
-	{"empty", nil, "da37bdf41145e39e34111775b40646e8059c2e969c1460bb98abccb26f0f76a5"},
+	{"empty", nil, "5df74e647fed52c1e941b26d546b8c689112f207eb8542965fdd9cd3083e5282"},
 	{"abc", []byte("abc"), "a34a53504d8ba070cb73a583146167a0a3c226d793440d9cea24465fe02251f2"},
 	{"31 bytes", sequence(31), "695e4c73aa9d4884c3b9c74c8b77d0239e84e8bce0a9117ee6368144cf388cf9"},
 	{"one block", sequence(32), "811cb06a8ee423182d9cc9d281f783908f4cfbaf47a68be8415d3499674a3063"},
@@ -46,10 +48,11 @@ func TestSum(t *testing.T) {
 }
 
 // The examples of GOST 34.311-95 and GOST R 34.11-94 use their own test S-box,
-// not a ДКЕ; the long messages are those of the standards' appendix.
+// not a ДКЕ; the long messages are those of the standards' appendix, the empty
+// one is gost34_311_test_5 of cryptonite (utest_gost34_311.c).
 func TestStandardExamples(t *testing.T) {
 	tests := []struct{ in, want string }{
-		{"", "ce85b99cc46752fffee35cab9a7b0278abb4c2d2055cff685af4912c49490f8d"},
+		{"", "891d358a84c6033cf17bac82d77bb5d6791695a08ffce3768d39fbcacf8b29bd"},
 		{"a", "d42c539e367c66e9c88a801f6649349c21871b4344c6a573f849fdce62f314dd"},
 		{"message digest", "ad4434ecb18f2c99b60cbe59ec3d2469582b65273f48de72db2fde16a4889a4d"},
 		{"This is message, length=32 bytes", "b1c466d37519b82e8319819ff32595e047a28cb6f83eff1c6916a815a637fffa"},

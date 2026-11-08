@@ -1,7 +1,7 @@
 # Звірка з іншими реалізаціями
 
 Диференціальна перевірка: uacrypto рахує випадкові (але відтворювані, з фіксованим зерном)
-випадки, а Bouncy Castle, Rust-бібліотеки і jkurwa (JS) рахують те саме незалежно. Підписи йдуть в обидва
+випадки, а Rust-бібліотеки, `crypto-dstu` (Go), jkurwa і `@li0ard/dstu` (JS) рахують те саме незалежно. Підписи йдуть в обидва
 боки: чужі реалізації перевіряють підписи uacrypto і підписують ті самі геші тими самими ключами,
 а uacrypto перевіряє їхні підписи.
 
@@ -10,17 +10,17 @@ cd parity
 make
 ```
 
-Потрібні `go`, `java`/`javac` (17+), `cargo`, `bun`, `curl`. Інший JDK:
-`make JAVA=/opt/homebrew/opt/openjdk/bin/java JAVAC=/opt/homebrew/opt/openjdk/bin/javac`. Bouncy Castle завантажується з Maven Central і
-перевіряється за SHA-256, `jkurwa` і `gost89` ставляться точно за `jkurwa/bun.lock`. Будь-яка розбіжність — ненульовий код виходу.
+Потрібні `go`, `cargo`, `bun`, `curl`. `jkurwa` і `gost89` ставляться точно за `jkurwa/bun.lock`, `@li0ard/dstu` — за
+`li0ard/bun.lock`, `crypto-dstu` — за `cryptodstu/go.sum`. Будь-яка розбіжність — ненульовий код виходу.
 
 | Файл | Що робить |
 |---|---|
-| [`main.go`](main.go) | `gen` — випадки від uacrypto; `verify` — перевірка чужих підписів; `cms` — звірка CMS; `tsa` — CAdES-T зі справжнім TSA; `czo` — корпус ЦЗО; `envelope-gen`, `envelope-check` — конверти ([`envelope.go`](envelope.go)); `crl-gen`, `crl-check` — CRL ([`crl.go`](crl.go)) |
-| [`java/Check.java`](java/Check.java) | Bouncy Castle 1.86 |
-| [`java/CRL.java`](java/CRL.java) | CRL через JCA-провайдер Bouncy Castle 1.86 в обидва боки: `X509CRL.verify` CRL uacrypto, номер, дельта-індикатор і записи; той самий CRL від BC (`V2TBSCertListGenerator`, `GOST3411WITHDSTU4145LE`) для `pki.ParseRevocationList` |
+| [`main.go`](main.go) | `gen` — випадки від uacrypto; `verify` — перевірка чужих підписів; `cms` — звірка CMS; `tsa` — CAdES-T зі справжнім TSA; `czo` — корпус ЦЗО; `envelope-gen`, `envelope-check` — конверти ([`envelope.go`](envelope.go)) |
 | [`jkurwa/envelope.mjs`](jkurwa/envelope.mjs) | конверти CMS EnvelopedData у обидва боки з `jkurwa` |
 | [`jkurwa/check.mjs`](jkurwa/check.mjs) | [`jkurwa`](https://github.com/dstucrypt/jkurwa) 1.22.9 (ДСТУ 4145) і [`gost89`](https://github.com/dstucrypt/gost89) 0.1.12 (ГОСТ 34.311, ГОСТ 28147: блок, CFB, імітовставка 32 і 64 біти) |
+| [`cryptodstu/main.go`](cryptodstu/main.go) | [`crypto-dstu`](https://github.com/amaneshi/crypto-dstu) на коміті `d16ff7a` (ГОСТ 34.311, Купина, ГОСТ 28147: блок і CFB, Калина, ДСТУ 4145); окремий модуль, щоб основний лишався без залежностей |
+| [`li0ard/check.mjs`](li0ard/check.mjs) | [`@li0ard/dstu`](https://github.com/li0ard/dstu) 0.2.0 (Купина, Калина, ДСТУ 4145) |
+| [`uapki/check.c`](uapki/check.c) | `uapkic` сертифікованої [UAPKI](https://github.com/specinfo-ua/UAPKI) (`make uapki`) |
 | [`rust/src/main.rs`](rust/src/main.rs) | `ua-cryptography-*` (зокрема `dstu7624` для Калини і `pki` для CMS), RustCrypto `kupyna`, `structured-dstu4145` |
 | [`iit/`](iit) | бібліотека ІІТ «Користувач ЦСК» (EU Sign) через `dlopen`, окремий модуль із cgo |
 | [`cryptonite/prng.c`](cryptonite/prng.c) | генератор ДСТУ 4145 сертифікованої [cryptonite](https://github.com/privat-it/cryptonite) (`make cryptonite`) |
@@ -45,8 +45,8 @@ MAC Калини-256 (`kalyna.CMAC`, 64, 128 і 256 біт) на всіх дов
 - **Неповні блоки CFB і MAC** ІІТ рахує так само, як сертифікована відкрита бібліотека
   [cryptonite](https://github.com/privat-it/cryptonite) і приклади ДСТУ 7624, а отже й uacrypto: хвіст CFB
   шифрується *останніми* байтами блока гами, а неповний останній блок MAC доповнюється `80 00…` і
-  маскується E(`01 00…`) замість E(0). Bouncy Castle і `ua-cryptography-dstu7624`, перекладений з нього,
-  беруть перші байти гами CFB і такі MAC відхиляють.
+  маскується E(`01 00…`) замість E(0). `ua-cryptography-dstu7624` бере перші байти гами CFB і такі MAC
+  відхиляє.
 
 ## cryptonite
 
@@ -57,11 +57,30 @@ cryptonite з фіксованого коміту (перевірка SHA-256), 
 `dstu4145/testdata/cryptonite_prng.txt` і запускає `TestPRNGCryptonite`, який перевіряє на тій самій
 таблиці `dstu4145.NewPRNG`, `Read` і `Seed`. Потрібні `curl` і `cc`; мережа — лише для першого завантаження.
 
+## UAPKI
+
+[UAPKI](https://github.com/specinfo-ua/UAPKI) — форк cryptonite з експертним висновком (2021).
+`make uapki` завантажує вихідний код з фіксованого коміту (перевірка SHA-256), збирає `uapkic` (CMake,
+статична бібліотека), компілює [`uapki/check.c`](uapki/check.c) і звіряє ГОСТ 34.311, Купину, ГОСТ 28147
+(блок, CFB, імітовставка 32 і 64 біти), Калину й ДСТУ 4145 в обидва боки; підписи `uapkic` потім перевіряє
+uacrypto. Потрібні `curl`, `cmake` і `cc`. `dstu4145_sign` бере лише геші довжиною 32, 48 і 64 байти,
+тож однобайтові випадки пропускаються. Порядок байтів у `uapkic` змішаний (див. коментар у `check.c`):
+`d` для `dstu4145_get_pubkey` little-endian, для `ec_init_sign` — big-endian; координати для
+`ec_init_verify` big-endian, решта — little-endian, як у ІІТ.
+
 ## Формати, які треба узгоджувати
 
-- **Bouncy Castle, ІІТ, `structured-dstu4145`, `jkurwa`, uacrypto** подають геш у ДСТУ 4145 так, як його
+- **ІІТ, `structured-dstu4145`, `jkurwa`, uacrypto** подають геш у ДСТУ 4145 так, як його
   видала геш-функція (байти ГОСТ 34.311 як little-endian число); підпис у форматі ІІТ — `r‖s`,
   кожне little-endian.
+- **ГОСТ 34.311 порожнього повідомлення.** Заключний етап стандарту (`H := f(H, M')`) безумовний:
+  uacrypto, як сертифіковані cryptonite й UAPKI і `crypto-dstu`, гешує нульовий блок доповнення й для
+  порожнього повідомлення (`5df74e64…`). `ua-cryptography-gost`, `ua-cryptography-pki`, `structured-dstu4145`
+  і `gost89` цей крок пропускають (`da37bdf4…`), тож у звірці з ними порожні повідомлення ГОСТ 34.311 і CMS над
+  порожнім вмістом з ГОСТ 34.311 пропускаються. ІІТ порожнього повідомлення не гешує зовсім.
+- **`crypto-dstu`** читає геш, який йому дають, як big-endian, тож звірка подає геш розвернутим, а підпис
+  передає як числа `r`, `s`.
+- **`@li0ard/dstu`**, як і `ua-cryptography-dstu4145`, геш читає big-endian, а підпис кодує `s‖r` big-endian.
 - **`ua-cryptography-dstu4145`** іде буквою стандарту: геш старшим байтом уперед (розвернутий
   вихід ГОСТ 34.311), підпис `D = S‖R` big-endian. Математика та сама, але без перетворення цих
   двох форматів підписи між ним і рештою не перевіряються.

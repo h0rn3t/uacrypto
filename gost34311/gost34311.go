@@ -1,10 +1,13 @@
 // Package gost34311 implements the GOST 34.311-95 hash function, the
 // Ukrainian adoption of GOST R 34.11-94, with ДКЕ №1 as the default S-box.
 //
-// The implementation is a port of GOST3411Digest from Bouncy Castle and
-// produces the same digests as Bouncy Castle and the IIT library, and the
-// examples of the standard with their own S-box. HMAC with GOST 34.311 is the
-// HMAC of crypto/hmac over New.
+// The implementation is a port of GOST3411Digest from Bouncy Castle. It
+// produces the same digests as the IIT library and the certified cryptonite
+// and UAPKI, and the examples of the standard with their own S-box. The empty
+// message, as the final stage of the standard reads and cryptonite and UAPKI
+// compute, is hashed with a zero padding block; Bouncy Castle hashes none
+// there, so the two differ on the empty message only. HMAC with GOST 34.311 is
+// the HMAC of crypto/hmac over New.
 package gost34311
 
 import (
@@ -84,10 +87,12 @@ func (d *digest) Sum(b []byte) []byte {
 }
 
 // checkSum finishes the digest: the last block padded with zeros, then the
-// bit length and the control sum go through the compression function.
+// bit length and the control sum go through the compression function. The
+// empty message has a last block too, all zeros, as the final stage of the
+// standard reads and cryptonite and UAPKI hash it; Bouncy Castle skips it.
 func (d *digest) checkSum() [Size]byte {
 	bitLen := d.n * 8
-	if d.nbuf > 0 {
+	if d.nbuf > 0 || d.n == 0 {
 		clear(d.buf[d.nbuf:])
 		d.block(&d.buf)
 	}
