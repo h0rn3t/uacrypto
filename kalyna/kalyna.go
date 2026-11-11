@@ -60,6 +60,24 @@ type kalyna struct {
 	keys      [][]byte // round keys 0..rounds
 }
 
+// Destroy overwrites the round keys of a block from [NewCipher128],
+// [NewCipher256] or [NewCipher512]. Encrypt and Decrypt then panic.
+// Destroy is idempotent and must not run concurrently with use of the block.
+// It does not erase caller-owned keys, runtime copies or the key-derived state
+// of modes built over the block: the authentication key H of a [GCM] and the
+// counter and keystream of a [NewCTR] stream stay in memory until collected.
+// Destroy panics for a block from another package.
+func Destroy(block cipher.Block) {
+	k, ok := block.(*kalyna)
+	if !ok {
+		panic(fmt.Sprintf("kalyna: Destroy of %T", block))
+	}
+	for _, key := range k.keys {
+		clear(key)
+	}
+	k.keys = nil
+}
+
 func newCipher(blockSize int, key []byte, keySizes ...int) (cipher.Block, error) {
 	if !slices.Contains(keySizes, len(key)) {
 		return nil, fmt.Errorf("kalyna: %d-byte key for a %d-byte block, want one of %v bytes", len(key), blockSize, keySizes)
@@ -73,6 +91,7 @@ func newCipher(blockSize int, key []byte, keySizes ...int) (cipher.Block, error)
 // the even ones.
 func expandKey(blockSize int, key []byte, rounds int) [][]byte {
 	kt := make([]byte, blockSize)
+	defer clear(kt)
 	binary.LittleEndian.PutUint64(kt, uint64((blockSize+len(key))/8+1)) //nolint:gosec // G115: at most 17
 	// k0 and k1 are the same block when the key is one block long
 	k0, k1 := key[:blockSize], key[len(key)-blockSize:]
@@ -106,6 +125,8 @@ func expandKey(blockSize int, key []byte, rounds int) [][]byte {
 		round(rk)
 		add(rk, tmv)
 		keys[i] = rk
+		clear(tmv)
+		clear(rotated)
 	}
 	for i := 1; i < rounds; i += 2 {
 		keys[i] = rotate(keys[i-1], blockSize/4+3)
@@ -116,11 +137,15 @@ func expandKey(blockSize int, key []byte, rounds int) [][]byte {
 func (k *kalyna) BlockSize() int { return k.blockSize }
 
 func (k *kalyna) Encrypt(dst, src []byte) {
+	if k.keys == nil {
+		panic("kalyna: use of a destroyed key")
+	}
 	if len(src) < k.blockSize || len(dst) < k.blockSize {
 		panic("kalyna: input not full block")
 	}
 	rounds := len(k.keys) - 1
 	var buf [64]byte
+	defer clear(buf[:])
 	s := buf[:k.blockSize]
 	copy(s, src)
 	add(s, k.keys[0])
@@ -134,11 +159,15 @@ func (k *kalyna) Encrypt(dst, src []byte) {
 }
 
 func (k *kalyna) Decrypt(dst, src []byte) {
+	if k.keys == nil {
+		panic("kalyna: use of a destroyed key")
+	}
 	if len(src) < k.blockSize || len(dst) < k.blockSize {
 		panic("kalyna: input not full block")
 	}
 	rounds := len(k.keys) - 1
 	var buf [64]byte
+	defer clear(buf[:])
 	s := buf[:k.blockSize]
 	copy(s, src)
 	sub(s, k.keys[rounds])

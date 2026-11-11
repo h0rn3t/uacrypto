@@ -10,6 +10,16 @@ permissions:
   contents: read
 
 jobs:
+  certification-profile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.27.3'
+      - name: Candidate profile with temporary secret erasure
+        run: bash scripts/test-certification-profile.sh
+
   test:
     runs-on: ubuntu-latest
     steps:

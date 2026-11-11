@@ -29,6 +29,7 @@ func Wrap(block cipher.Block, key []byte) ([]byte, error) {
 		return nil, err
 	}
 	buf := make([]byte, padded+n)
+	defer clear(buf)
 	copy(buf, key)
 	if padded != len(key) {
 		copy(buf[len(key):], keyTrailer(len(key), padded, n))
@@ -125,7 +126,12 @@ func wrapBlocks(block cipher.Block, data []byte, steps int, encrypt bool) []byte
 		shiftRight(halves, buf[half:])
 	}
 	clear(buf)
-	return joinHalves(b, halves)
+	out := joinHalves(b, halves)
+	clear(b)
+	for _, h := range halves {
+		clear(h)
+	}
+	return out
 }
 
 func splitHalves(data []byte, half int) ([]byte, [][]byte) {

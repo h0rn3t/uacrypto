@@ -22,6 +22,7 @@ var (
 	oidMessageDigest = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 9, 4}
 	oidData          = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 7, 1}
 	oidSigningTime   = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 9, 5}
+	oidSigningCert   = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 9, 16, 2, 12}
 	oidSigningCertV2 = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 9, 16, 2, 47}
 )
 
@@ -126,7 +127,9 @@ func (sd *signedData) marshal() ([]byte, error) {
 // VerifySignedData returns the content and the signers in SignerInfo order. It
 // checks signatures only: the signer certificates are not checked against any
 // trust anchor. A signature or message digest that does not match is
-// ErrInvalidSignature.
+// ErrInvalidSignature. When SigningCertificate or SigningCertificateV2 is
+// present, its first reference must match the certificate used to verify the
+// signature, including its issuer and serial number when specified.
 func VerifySignedData(der, detached []byte, certs []*x509.Certificate) (content []byte, signers []Signer, err error) {
 	_, content, signers, err = verifySignedData(der, detached, certs)
 	return content, signers, err
@@ -172,13 +175,27 @@ func verifySignedData(der, detached []byte, certs []*x509.Certificate) (asn1.Obj
 	}
 	signers := make([]Signer, 0, len(sd.SignerInfos))
 	for i, si := range sd.SignerInfos {
-		cert, err := findCertificate(si.SID, pool)
+		match, err := certificateMatcher(si.SID)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("pki: signer %d: %w", i, err)
 		}
-		signer, err := verifySignerInfo(si, encap.Type, content, cert, pool)
+		// several certificates can carry the SID, as a renewed certificate of
+		// the same key does: the signature and its ESS reference pick the one
+		var signer Signer
+		err = errors.New("certificate not found")
+		for _, cert := range pool {
+			if !match(cert) {
+				continue
+			}
+			if signer, err = verifySignerInfo(si, encap.Type, content, cert, pool); !errors.Is(err, ErrInvalidSignature) {
+				break
+			}
+		}
+		if err != nil && signer.Certificate == nil {
+			return nil, nil, nil, fmt.Errorf("pki: signer %d: %w", i, err)
+		}
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("pki: signer %d (%s): %w", i, cert.Subject, err)
+			return nil, nil, nil, fmt.Errorf("pki: signer %d (%s): %w", i, signer.Certificate.Subject, err)
 		}
 		signers = append(signers, signer)
 	}
@@ -216,25 +233,32 @@ func certificateSet(set []byte) ([]*x509.Certificate, error) {
 // IssuerAndSerialNumber or a [0] SubjectKeyIdentifier, as in a SignerInfo and
 // the originator of a KeyAgreeRecipientInfo.
 func findCertificate(id asn1.RawValue, pool []*x509.Certificate) (*x509.Certificate, error) {
-	var match func(*x509.Certificate) bool
-	if id.Class == asn1.ClassContextSpecific && id.Tag == 0 {
-		match = func(c *x509.Certificate) bool { return bytes.Equal(c.SubjectKeyId, id.Bytes) }
-	} else {
-		var ias struct {
-			Issuer asn1.RawValue
-			Serial *big.Int
-		}
-		if err := unmarshal(id.FullBytes, &ias); err != nil {
-			return nil, fmt.Errorf("certificate identifier: %w", err)
-		}
-		match = func(c *x509.Certificate) bool {
-			return bytes.Equal(c.RawIssuer, ias.Issuer.FullBytes) && c.SerialNumber.Cmp(ias.Serial) == 0
-		}
+	match, err := certificateMatcher(id)
+	if err != nil {
+		return nil, err
 	}
 	if i := slices.IndexFunc(pool, match); i >= 0 {
 		return pool[i], nil
 	}
 	return nil, errors.New("certificate not found")
+}
+
+// certificateMatcher reports whether a certificate is the one id names, as
+// findCertificate describes.
+func certificateMatcher(id asn1.RawValue) (func(*x509.Certificate) bool, error) {
+	if id.Class == asn1.ClassContextSpecific && id.Tag == 0 {
+		return func(c *x509.Certificate) bool { return bytes.Equal(c.SubjectKeyId, id.Bytes) }, nil
+	}
+	var ias struct {
+		Issuer asn1.RawValue
+		Serial *big.Int
+	}
+	if err := unmarshal(id.FullBytes, &ias); err != nil {
+		return nil, fmt.Errorf("certificate identifier: %w", err)
+	}
+	return func(c *x509.Certificate) bool {
+		return bytes.Equal(c.RawIssuer, ias.Issuer.FullBytes) && c.SerialNumber.Cmp(ias.Serial) == 0
+	}, nil
 }
 
 // verifySignerInfo checks one signer: the signed attributes against the
@@ -261,7 +285,7 @@ func verifySignerInfo(si signerInfo, contentType asn1.ObjectIdentifier, content 
 		// the signature covers the attributes with their universal SET tag (RFC 5652, 5.4)
 		signed = append([]byte{0x31}, si.SignedAttrs.FullBytes[1:]...)
 		h.Write(content)
-		if signer.SigningTime, err = checkSignedAttrs(signed, contentType, h.Sum(nil)); err != nil {
+		if signer.SigningTime, err = checkSignedAttrs(signed, contentType, h.Sum(nil), cert); err != nil {
 			return signer, err
 		}
 		h.Reset()
@@ -331,8 +355,8 @@ func parseAttributes(set asn1.RawValue) ([]attribute, error) {
 
 // checkSignedAttrs checks that the signed attributes name the content type
 // and carry the message digest of the content, each exactly once, and returns
-// the signing time when there is one.
-func checkSignedAttrs(set []byte, contentType asn1.ObjectIdentifier, digest []byte) (time.Time, error) {
+// the signing time when there is one. ESS references must bind cert.
+func checkSignedAttrs(set []byte, contentType asn1.ObjectIdentifier, digest []byte, cert *x509.Certificate) (time.Time, error) {
 	attrs, err := parseAttributes(asn1.RawValue{FullBytes: set})
 	if err != nil {
 		return time.Time{}, fmt.Errorf("signed attributes: %w", err)
@@ -341,6 +365,9 @@ func checkSignedAttrs(set []byte, contentType asn1.ObjectIdentifier, digest []by
 		i := slices.IndexFunc(attrs, func(a attribute) bool { return a.Type.Equal(oid) })
 		if i < 0 {
 			return false, nil
+		}
+		if slices.ContainsFunc(attrs[i+1:], func(a attribute) bool { return a.Type.Equal(oid) }) {
+			return true, fmt.Errorf("duplicate signed attribute %v", oid)
 		}
 		if err := unmarshal(attrs[i].Values.Bytes, v); err != nil {
 			return true, fmt.Errorf("signed attribute %v: %w", oid, err)
@@ -366,7 +393,75 @@ func checkSignedAttrs(set []byte, contentType asn1.ObjectIdentifier, digest []by
 	if _, err := value(oidSigningTime, &signingTime); err != nil {
 		return time.Time{}, err
 	}
+	if err := checkSigningCertificate(attrs, cert); err != nil {
+		return time.Time{}, err
+	}
 	return signingTime, nil
+}
+
+// checkSigningCertificate validates both ESS attribute versions when present (RFC 5035).
+func checkSigningCertificate(attrs []attribute, cert *x509.Certificate) error {
+	for i, a := range attrs {
+		v1 := a.Type.Equal(oidSigningCert)
+		if !v1 && !a.Type.Equal(oidSigningCertV2) {
+			continue
+		}
+		if slices.ContainsFunc(attrs[i+1:], func(other attribute) bool { return other.Type.Equal(a.Type) }) {
+			return fmt.Errorf("duplicate signing certificate attribute %v", a.Type)
+		}
+		var refs struct {
+			Certs    []asn1.RawValue
+			Policies asn1.RawValue `asn1:"optional"`
+		}
+		if err := unmarshal(a.Values.Bytes, &refs); err != nil {
+			return fmt.Errorf("signing certificate attribute: %w", err)
+		}
+		if len(refs.Certs) == 0 {
+			return errors.New("signing certificate attribute has no certificate references")
+		}
+		var ref struct {
+			Hash         pkix.AlgorithmIdentifier `asn1:"optional"`
+			Digest       []byte
+			IssuerSerial asn1.RawValue `asn1:"optional"`
+		}
+		if err := unmarshal(refs.Certs[0].FullBytes, &ref); err != nil {
+			return fmt.Errorf("signing certificate reference: %w", err)
+		}
+		alg := ref.Hash.Algorithm
+		if v1 {
+			if alg != nil {
+				return errors.New("SigningCertificate v1 must not name a hash algorithm")
+			}
+			alg = asn1.ObjectIdentifier{1, 3, 14, 3, 2, 26} // SHA-1
+		} else if alg == nil {
+			alg = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 2, 1} // SHA-256 DEFAULT
+		}
+		// certIDHash takes MD5 for OCSP lookups; a binding needs collision resistance
+		if alg.Equal(asn1.ObjectIdentifier{1, 2, 840, 113549, 2, 5}) {
+			return fmt.Errorf("signing certificate reference hashed with MD5: %w", x509.ErrUnsupportedAlgorithm)
+		}
+		h, err := certIDHash(alg)
+		if err != nil {
+			return err
+		}
+		h.Write(cert.Raw)
+		if !bytes.Equal(h.Sum(nil), ref.Digest) {
+			return fmt.Errorf("signing certificate digest: %w", ErrInvalidSignature)
+		}
+		if ref.IssuerSerial.FullBytes != nil {
+			var id issuerSerial
+			if err := unmarshal(ref.IssuerSerial.FullBytes, &id); err != nil {
+				return fmt.Errorf("signing certificate issuerSerial: %w", err)
+			}
+			nameMatches := slices.ContainsFunc(id.Issuer, func(name asn1.RawValue) bool {
+				return name.Class == asn1.ClassContextSpecific && name.Tag == 4 && bytes.Equal(name.Bytes, cert.RawIssuer)
+			})
+			if id.Serial == nil || id.Serial.Cmp(cert.SerialNumber) != 0 || !nameMatches {
+				return fmt.Errorf("signing certificate issuerSerial: %w", ErrInvalidSignature)
+			}
+		}
+	}
+	return nil
 }
 
 // issuerSerial is the IssuerSerial of RFC 5035 that names a certificate.

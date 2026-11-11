@@ -48,10 +48,12 @@ func NewCipher(key, iv []byte) (cipher.Stream, error) {
 		return nil, fmt.Errorf("strumok: IV is %d bytes, want %d", len(iv), IVSize)
 	}
 	var k [8]uint64
+	defer clear(k[:])
 	for i := range len(key) / 8 {
 		k[i] = binary.LittleEndian.Uint64(key[8*i:])
 	}
 	var v [4]uint64
+	defer clear(v[:])
 	for i := range v {
 		v[i] = binary.LittleEndian.Uint64(iv[8*i:])
 	}
@@ -86,17 +88,34 @@ func NewCipher(key, iv []byte) (cipher.Stream, error) {
 // stream is the state: the LFSR s with s[i] its oldest word, the FSM
 // registers r1 and r2, and the keystream word being spent.
 type stream struct {
-	s      [16]uint64
-	i      int
-	r1, r2 uint64
-	word   [8]byte
-	used   int // bytes of word already spent
+	s         [16]uint64
+	i         int
+	r1, r2    uint64
+	word      [8]byte
+	used      int // bytes of word already spent
+	destroyed bool
+}
+
+// Destroy overwrites the secret state and buffered keystream of v, a stream
+// from [NewCipher]. XORKeyStream then panics, including for an empty input.
+// Destroy is idempotent and must not run concurrently with use of v.
+// Caller-owned keys and copies previously made by the runtime are not erased.
+// Destroy panics for a stream from another package.
+func Destroy(v cipher.Stream) {
+	c, ok := v.(*stream)
+	if !ok {
+		panic(fmt.Sprintf("strumok: Destroy of %T", v))
+	}
+	*c = stream{destroyed: true}
 }
 
 // at returns the LFSR word n positions after the oldest.
 func (c *stream) at(n int) uint64 { return c.s[(c.i+n)%16] }
 
 func (c *stream) XORKeyStream(dst, src []byte) {
+	if c.destroyed {
+		panic("strumok: use of a destroyed key")
+	}
 	if len(dst) < len(src) {
 		panic("strumok: output smaller than input")
 	}
@@ -141,6 +160,7 @@ func mulBytes(b byte, c uint64) uint64 {
 // matrix.
 func transform(w uint64) uint64 {
 	var col [8]byte
+	defer clear(col[:])
 	binary.LittleEndian.PutUint64(col[:], w)
 	for k := range col {
 		col[k] = spn.Lookup(&spn.Sbox[k%4], col[k])

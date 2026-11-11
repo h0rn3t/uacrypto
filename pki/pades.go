@@ -148,13 +148,8 @@ func (f *pdfFile) verifySignature(ref pdfRef, pool []*x509.Certificate, dss long
 
 	// the gap of the byte range is exactly the /Contents of this dictionary
 	br := sig.ByteRange
-	if br[0] != 0 || br[1] <= off || br[2] <= br[1]+1 || br[2] > int64(end) || br[2]+br[3] > int64(len(f.data)) ||
-		f.data[br[1]] != '<' || f.data[br[2]-1] != '>' {
-		return sig, fmt.Errorf("/ByteRange %v does not leave out the /Contents of the signature", br)
-	}
-	gap := make([]byte, hex.DecodedLen(int(br[2]-br[1]-2)))
-	if _, err := hex.Decode(gap, f.data[br[1]+1:br[2]-1]); err != nil || !bytes.Equal(gap, contents) {
-		return sig, fmt.Errorf("/ByteRange %v does not leave out the /Contents of the signature", br)
+	if err := f.checkByteRange(br, off, end, contents); err != nil {
+		return sig, err
 	}
 	sig.CoversDocument = br[2]+br[3] == int64(len(f.data))
 	signed := slices.Concat(f.data[:br[1]], f.data[br[2]:br[2]+br[3]])
@@ -201,6 +196,20 @@ func (f *pdfFile) verifySignature(ref pdfRef, pool []*x509.Certificate, dss long
 		return sig, fmt.Errorf("/SubFilter %q: %w", sig.SubFilter, errors.ErrUnsupported)
 	}
 	return sig, nil
+}
+
+// checkByteRange validates all offsets before arithmetic or slicing.
+func (f *pdfFile) checkByteRange(br [4]int64, off int64, end int, contents []byte) error {
+	if br[0] != 0 || br[1] <= off || br[1] >= int64(len(f.data)) || br[2] > int64(end) ||
+		br[2] <= br[1] || br[2]-br[1] < 2 || br[3] > int64(len(f.data))-br[2] ||
+		f.data[br[1]] != '<' || f.data[br[2]-1] != '>' {
+		return fmt.Errorf("/ByteRange %v does not leave out the /Contents of the signature", br)
+	}
+	gap := make([]byte, hex.DecodedLen(int(br[2]-br[1]-2)))
+	if _, err := hex.Decode(gap, f.data[br[1]+1:br[2]-1]); err != nil || !bytes.Equal(gap, contents) {
+		return fmt.Errorf("/ByteRange %v does not leave out the /Contents of the signature", br)
+	}
+	return nil
 }
 
 // byteRange reads a /ByteRange of four non-negative integers.
